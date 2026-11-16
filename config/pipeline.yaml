@@ -1,0 +1,24 @@
+# Run contract for one UPC. Bronze and silver roots stay empty until paths are wired.
+intervals:
+  parent_m: 1000
+  child_100m: 100
+  child_10m: 10
+pci_weights:
+  cracking: 0.12
+  ravelling: 0.10
+  pothole: 0.16
+  patching: 0.08
+  rutting: 0.14
+  roughness: 0.40
+cracking:
+  area_divisor_m2: 35.0
+  cap_factor_max: 1.0
+  severity_medium_mm: 3.0
+  severity_high_mm: 6.0
+publish:
+  partition_keys: [upc, phase, cycle]
+paths:
+  bronze_root: ""
+  silver_root: ""
+  tracker: ""
+  image_root: ""

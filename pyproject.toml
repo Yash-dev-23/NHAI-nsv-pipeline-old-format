@@ -1,0 +1,12 @@
+[project]
+name = "ris-silver"
+version = "0.1.0"
+description = "Bronze-to-silver DLM extraction for one UPC, built to run as a Python process on EC2."
+requires-python = ">=3.10"
+dependencies = ["pandas>=2.0", "pyarrow>=14.0", "openpyxl>=3.1"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.unittest]
+start-directory = "tests"
