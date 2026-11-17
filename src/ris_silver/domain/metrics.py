@@ -9,8 +9,11 @@ def lane_iri(left_wheel, right_wheel) -> float:
 
 
 def bi_from_iri(iri) -> float:
-    """Roughness BI (mm/km) = 630 × IRI^1.12."""
-    return 630.0 * (float(iri) ** 1.12)
+    """Roughness BI (mm/km) = 630 × IRI^1.12. A negative IRI has no real BI."""
+    number = float(iri)
+    if number < 0:
+        return float("nan")
+    return 630.0 * (number ** 1.12)
 
 
 def ravelling_percent(area_m2, divisor_m2: float = 35.0) -> float:

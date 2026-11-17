@@ -26,6 +26,7 @@ from ris_silver.domain.spec import POTHOLE_TABLE, linear_specs
 from ris_silver.ingest.patching import load_patching
 
 _NH_RE = re.compile(r"^\s*(?:N\.?\s*H\.?)?\s*[-_/ ]*0*(\d+)\s*([A-Za-z]*)\s*$", re.I)
+_DIRECTION_CACHE: dict[tuple[int, str], pd.DataFrame] = {}
 _D3_NAME = {
     "cracking": "Cracking",
     "roughness": "Roughness",
@@ -182,8 +183,15 @@ def prepare_carriageway(frame) -> pd.DataFrame:
 def _same_direction(frame: pd.DataFrame, direction: str | None) -> pd.DataFrame:
     if frame is None or frame.empty or direction is None or "direction" not in frame.columns:
         return frame
-    same = frame[frame["direction"].fillna("").astype(str).str.strip().str.lower() == direction.strip().lower()]
-    return same if not same.empty else frame
+    normalized = direction.strip().lower()
+    key = (id(frame), normalized)
+    cached = _DIRECTION_CACHE.get(key)
+    if cached is not None:
+        return cached
+    same = frame[frame["direction"].fillna("").astype(str).str.strip().str.lower() == normalized]
+    filtered = same if not same.empty else frame
+    _DIRECTION_CACHE[key] = filtered
+    return filtered
 
 
 def _nh_value(row) -> str | None:
