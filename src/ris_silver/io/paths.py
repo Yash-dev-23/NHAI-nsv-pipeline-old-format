@@ -3,6 +3,8 @@
 S3-style convention:
     <silver_root>/zone=<zone>/phase=<phase>/cycle=<cycle>/<upc>/run_date=<YYYY-MM-DD>/<table>/<table>.parquet
     and a sibling <table>.csv alongside the parquet object.
+    The current copy lives at the silver root:
+    <silver_root>/latest/zone=<zone>/phase=<phase>/cycle=<cycle>/<upc>/<table>/
 """
 
 from __future__ import annotations
@@ -61,15 +63,22 @@ def silver_partition_dir(ctx: RunContext, table: str) -> Path | None:
 
 
 def silver_latest_partition_dir(ctx: RunContext, table: str) -> Path | None:
-    """Mirror the currently active run into a stable latest folder beneath the same UPC tree.
+    """Mirror the current run under latest at the silver root, not inside the UPC folder.
 
-    This keeps historical run_date folders intact while making the newest Silver data immediately available
-    under <silver_root>/zone=.../phase=.../cycle=.../<upc>/latest/<table>/.
+    Dated runs stay at zone/phase/cycle/upc/run_date. The newest copy is:
+    <silver_root>/latest/zone=.../phase=.../cycle=.../<upc>/<table>/
     """
-    root = silver_run_root(ctx)
-    if root is None:
+    if not ctx.silver_root:
         return None
-    return root / "latest" / table
+    return (
+        Path(ctx.silver_root)
+        / "latest"
+        / f"zone={ctx.zone}"
+        / f"phase={ctx.phase}"
+        / f"cycle={ctx.cycle}"
+        / _upc_key(ctx.upc)
+        / table
+    )
 
 
 def silver_parquet_path(ctx: RunContext, table: str) -> Path | None:
