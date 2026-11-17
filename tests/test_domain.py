@@ -1,3 +1,4 @@
+import time
 import unittest
 
 import pandas as pd
@@ -119,6 +120,18 @@ class RatingTests(unittest.TestCase):
         self.assertEqual(nh_at(lrms, empty, 1200, "L1", None), "NH-27")
         self.assertEqual(nh_at(lrms, empty, 1200, "R1", None), "NH-48")
 
+    def test_nh_lookup_stays_fast_for_large_direction_groups(self):
+        lrms = pd.DataFrame({
+            "chainage": list(range(0, 20000, 10)),
+            "nh_number": ["NH-27"] * 2000,
+            "direction": ["Increasing"] * 2000,
+        })
+        pavement = pd.DataFrame(columns=["start_chainage", "end_chainage", "nh_number", "direction"])
+        start = time.perf_counter()
+        for chainage in range(0, 20000, 10):
+            self.assertEqual(nh_at(lrms, pavement, chainage, "L1", "Increasing"), "NH-27")
+        self.assertLess(time.perf_counter() - start, 1.0)
+
     def test_parent_rating_is_the_worst_lane(self):
         self.assertEqual(worst_ca_rating([1000, 3000], "roughness", 2000), "Poor (>2000mm/km)")
         self.assertEqual(ca_rating("roughness", 1550, 2000), "Good (<1600mm/km)")
@@ -132,6 +145,7 @@ class MetricTests(unittest.TestCase):
     def test_roughness_and_crack_labels(self):
         self.assertEqual(lane_iri(1, 3), 2)
         self.assertEqual(bi_from_iri(2), 630.0 * (2 ** 1.12))
+        self.assertNotEqual(bi_from_iri(-1), bi_from_iri(-1))
         self.assertEqual(crack_condition(4, 5), "Very Good (<5%)")
         self.assertTrue(roughness_condition(2, 1368, 2000).startswith("Good"))
 

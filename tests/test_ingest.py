@@ -135,7 +135,7 @@ class IngestTests(unittest.TestCase):
             images = root / "images"
             images.mkdir()
             (images / "survey_L1_1_000000.jpg").write_bytes(b"img")
-            silver = root / "silver"
+            silver = root / "silver_tables"
             other = silver / "master_roughness" / "upc=OTHER" / "phase=2" / "cycle=1"
             other.mkdir(parents=True)
             pd.DataFrame({"upc_code": ["OTHER"]}).to_parquet(other / "part-000.parquet", index=False)
