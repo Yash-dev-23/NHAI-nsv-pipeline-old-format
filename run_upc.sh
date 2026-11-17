@@ -15,6 +15,19 @@ ZONE="B"
 PHASE="1"
 CYCLE="2"
 UPC="N_04006_03001_GJ"
+# A list line may pass UPC, then ZONE, PHASE, and CYCLE. A bare ./run_upc.sh keeps the values above.
+if [[ $# -ge 1 && -n "${1}" ]]; then
+  UPC="$1"
+fi
+if [[ $# -ge 2 && -n "${2}" ]]; then
+  ZONE="$2"
+fi
+if [[ $# -ge 3 && -n "${3}" ]]; then
+  PHASE="$3"
+fi
+if [[ $# -ge 4 && -n "${4}" ]]; then
+  CYCLE="$4"
+fi
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 WORK="${TMPDIR:-/tmp}/ris-silver/${ZONE}_${PHASE}_${CYCLE}_${UPC}"
@@ -25,11 +38,17 @@ PREFIX="Zone=${ZONE}/Phase=${PHASE}/Cycle=${CYCLE}/UPC=${UPC}"
 LOG_NAME="${UPC}_Z${ZONE}_P${PHASE}_C${CYCLE}_${STAMP}.log"
 LOG_FILE="${ROOT}/logs/${LOG_NAME}"
 PIPELINE_STATUS="NOT_STARTED"
+RUN_STARTED="$(date +%s)"
 
 mkdir -p "${LOCAL_BRONZE}" "${LOCAL_SILVER}" "${WORK}/images" "${ROOT}/logs"
 
 log() {
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "${LOG_FILE}"
+}
+
+format_elapsed() {
+  local seconds="$1"
+  printf '%02d:%02d:%02d (%ss)' "$((seconds / 3600))" "$(((seconds % 3600) / 60))" "$((seconds % 60))" "${seconds}"
 }
 
 count_named() {
@@ -62,6 +81,7 @@ finish() {
   local code=$?
   log "---- summary ----"
   log "pipeline_status=${PIPELINE_STATUS} exit=${code}"
+  log "upc_elapsed=$(format_elapsed "$(( $(date +%s) - RUN_STARTED ))")"
   log "bronze_parquet=$(count_named "${LOCAL_BRONZE}" '*.parquet')"
   log "silver_parquet_run_date=$(count_named "${LOCAL_SILVER}" '*.parquet' 'run_date=*')"
   log "silver_csv_run_date=$(count_named "${LOCAL_SILVER}" '*.csv' 'run_date=*')"
