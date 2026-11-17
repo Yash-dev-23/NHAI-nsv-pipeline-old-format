@@ -18,7 +18,7 @@ cracking:
 publish:
   partition_keys: [upc, phase, cycle]
 paths:
-  bronze_root: ""
-  silver_root: ""
-  tracker: ""
-  image_root: ""
+  bronze_root: "${BRONZE_S3_ROOT}"
+  silver_root: "${SILVER_S3_ROOT}"
+  tracker: "${TRACKER_S3}"
+  image_root: "${IMAGE_ROOT}"
