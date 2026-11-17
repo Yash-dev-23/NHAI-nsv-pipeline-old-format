@@ -14,7 +14,7 @@ import pandas as pd
 from ris_silver.domain.hierarchy import rollup_lanes
 from ris_silver.domain.lanes import normalize_lane
 from ris_silver.domain.spec import POTHOLE_TABLE, CHAINAGE_TABLE, linear_specs
-from ris_silver.io.paths import silver_partition_dir
+from ris_silver.io.paths import silver_partition_dir, silver_parquet_path
 from ris_silver.io.writer import _replace_partition
 from ris_silver.quality.report import build_report
 
@@ -89,8 +89,7 @@ def _lane_key(lane: str):
 def _read_published(ctx, names: list[str]) -> dict[str, pd.DataFrame]:
     frames = {}
     for name in names:
-        directory = silver_partition_dir(ctx, name)
-        path = None if directory is None else directory / "part-000.parquet"
+        path = silver_parquet_path(ctx, name)
         if path is not None and path.is_file():
             frames[name] = pd.read_parquet(path)
         else:
@@ -348,7 +347,7 @@ def validate(ctx):
         report["zone"] = ctx.zone
         report["phase"] = str(ctx.phase)
         report["cycle"] = str(ctx.cycle)
-        _replace_partition(directory, report)
+        _replace_partition(directory, report, "dlm_validation_results")
     counts = Counter(row["status"] for row in results)
     print("validate: " + ", ".join(f"{status}={counts[status]}" for status in ("PASS", "WARN", "FAIL", "SKIP") if counts[status]))
     if counts["FAIL"]:
