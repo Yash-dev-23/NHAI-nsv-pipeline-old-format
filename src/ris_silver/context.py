@@ -19,6 +19,8 @@ class RunContext:
     silver_root: str = ""
     tracker_path: str = ""
     image_root: str = ""
+    run_date: str = ""
+    run_id: str = ""
     frames: dict = field(default_factory=dict, hash=False, compare=False)
 
     @property

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -50,11 +52,132 @@ def repo_config_dir() -> Path:
     raise FileNotFoundError("config/pipeline.yaml not found from the package location")
 
 
+def _expand_env_value(value: str, env: dict[str, str]) -> str:
+    expanded = value.strip()
+    if expanded and expanded[0] == expanded[-1] and expanded[0] in {'"', "'"}:
+        expanded = expanded[1:-1]
+
+    def resolve_template(text: str) -> str:
+        def replace_var(match: re.Match[str]) -> str:
+            token = match.group(0)
+            if token.startswith("${") and token.endswith("}"):
+                inner = token[2:-1]
+                if ":-" in inner:
+                    name, default = inner.split(":-", 1)
+                    resolved = env.get(name)
+                    if resolved is not None and resolved != "":
+                        return resolved
+                    return resolve_template(default)
+                return env.get(inner, "")
+            if token.startswith("$"):
+                name = token[1:]
+                return env.get(name, "")
+            return token
+
+        result = re.sub(r"\$\{[^}]+\}|\$[A-Za-z_][A-Za-z0-9_]*", replace_var, text)
+        return os.path.expanduser(result)
+
+    result = expanded
+    previous = None
+    while result != previous:
+        previous = result
+        result = resolve_template(result)
+    return result
+
+
+def load_project_env(project_root: Path | None = None) -> Path:
+    root = project_root or repo_config_dir().parent
+    for candidate in (root / "pipeline.env", root / ".env"):
+        if not candidate.is_file():
+            continue
+        parsed: dict[str, str] = {}
+        for raw_line in candidate.read_text().splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):]
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if not key:
+                continue
+            merged = os.environ.copy() | parsed
+            parsed[key] = _expand_env_value(value, merged)
+        for key, value in parsed.items():
+            os.environ.setdefault(key, value)
+    return root
+
+
+def project_root_for(config_dir: Path | None = None) -> Path:
+    env_root = os.environ.get("PROJECT_ROOT")
+    if env_root:
+        return Path(env_root).expanduser().resolve()
+    folder = config_dir or repo_config_dir()
+    return folder.parent.resolve()
+
+
+def resolve_runtime_path(raw_value: str | None, *, project_root: Path, config_dir: Path | None = None) -> str:
+    if raw_value is None:
+        return ""
+    value = str(raw_value).strip()
+    if not value:
+        return ""
+
+    value = os.path.expanduser(os.path.expandvars(value))
+    value = value.replace("${PROJECT_ROOT}", str(project_root)).replace("$PROJECT_ROOT", str(project_root))
+    value = value.replace("${CONFIG_DIR}", str(config_dir or project_root)).replace("$CONFIG_DIR", str(config_dir or project_root))
+
+    if value.startswith("s3://"):
+        return value
+
+    candidate = Path(value)
+    if candidate.is_absolute():
+        return str(candidate)
+
+    if any(ch in value for ch in "*?[]"):
+        matches = sorted(
+            project_root.glob(value),
+            key=lambda path: path.stat().st_mtime if path.exists() else 0,
+            reverse=True,
+        )
+        if matches:
+            return str(matches[0])
+        return str((project_root / value).resolve())
+
+    return str((project_root / value).resolve())
+
+
 def load_run(zone: str, phase: str, cycle: str, upc: str, config_dir: Path | None = None) -> RunContext:
     folder = config_dir or repo_config_dir()
+    project_root = project_root_for(folder)
+    load_project_env(project_root)
+    project_root = project_root_for(folder)
     pipeline = load_yaml((folder / "pipeline.yaml").read_text())
     irc = load_yaml((folder / "standards" / "irc.yaml").read_text())
     paths = pipeline.get("paths", {})
+    resolved_paths = {
+        key: resolve_runtime_path(value, project_root=project_root, config_dir=folder)
+        for key, value in paths.items()
+    }
+    if os.environ.get("BRONZE_S3_ROOT"):
+        resolved_paths["bronze_root"] = os.environ["BRONZE_S3_ROOT"]
+    elif os.environ.get("BRONZE_ROOT"):
+        resolved_paths["bronze_root"] = os.environ["BRONZE_ROOT"]
+
+    if os.environ.get("SILVER_S3_ROOT"):
+        resolved_paths["silver_root"] = os.environ["SILVER_S3_ROOT"]
+    elif os.environ.get("SILVER_ROOT"):
+        resolved_paths["silver_root"] = os.environ["SILVER_ROOT"]
+
+    if os.environ.get("TRACKER_S3"):
+        resolved_paths["tracker"] = os.environ["TRACKER_S3"]
+    elif os.environ.get("TRACKER_PATH"):
+        resolved_paths["tracker"] = os.environ["TRACKER_PATH"]
+
+    if os.environ.get("IMAGE_ROOT"):
+        resolved_paths["image_root"] = os.environ["IMAGE_ROOT"]
     return RunContext(
         zone=zone,
         phase=str(phase),
@@ -63,10 +186,10 @@ def load_run(zone: str, phase: str, cycle: str, upc: str, config_dir: Path | Non
         config_dir=folder,
         pipeline=pipeline,
         irc=irc,
-        bronze_root=str(paths.get("bronze_root") or ""),
-        silver_root=str(paths.get("silver_root") or ""),
-        tracker_path=str(paths.get("tracker") or ""),
-        image_root=str(paths.get("image_root") or ""),
+        bronze_root=str(resolved_paths.get("bronze_root") or ""),
+        silver_root=str(resolved_paths.get("silver_root") or ""),
+        tracker_path=str(resolved_paths.get("tracker") or ""),
+        image_root=str(resolved_paths.get("image_root") or ""),
     )
 
 
