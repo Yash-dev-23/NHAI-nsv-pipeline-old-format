@@ -69,7 +69,7 @@ class BatchSummaryTests(unittest.TestCase):
             publish(ctx, {"master_roughness": pd.DataFrame({"id": [1, 2]})})
 
             run_dir = Path(tmpdir) / "silver" / "zone=B" / "phase=2" / "cycle=1" / "N-07024-01001-GJ" / "run_date=2026-11-17"
-            latest_dir = Path(tmpdir) / "silver" / "latest" / "zone=B" / "phase=2" / "cycle=1" / "N-07024-01001-GJ"
+            latest_dir = Path(tmpdir) / "silver" / "zone=B" / "phase=2" / "cycle=1" / "N-07024-01001-GJ" / "latest"
 
             self.assertTrue((run_dir / "master_roughness" / "master_roughness.parquet").exists())
             self.assertTrue((latest_dir / "master_roughness" / "master_roughness.parquet").exists())

@@ -3,7 +3,6 @@
 Each table is published as an S3-like object pair:
     <silver_root>/zone=<zone>/phase=<phase>/cycle=<cycle>/<upc>/run_date=<date>/<table>/<table>.parquet
     <silver_root>/zone=<zone>/phase=<phase>/cycle=<cycle>/<upc>/run_date=<date>/<table>/<table>.csv
-    plus a copy at <silver_root>/latest/zone=.../phase=.../cycle=.../<upc>/<table>/
 """
 
 from __future__ import annotations
