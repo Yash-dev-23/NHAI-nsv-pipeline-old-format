@@ -1,20 +1,26 @@
-"""LHS/RHS silver tables.
+"""Notebook silver tables.
 
-Lane rows are rolled up first. A parent is one row per side per bin: the value is the
-average of that side's lanes, and the side breaches if any lane breaches CA.
-IRC children use the fixed cuts and breach only when the value is strictly greater.
+Roughness and rutting have one LHS/RHS parent per 1000 m: the value is the average
+of that side's lanes, and the side breaches if any lane breaches CA.
+Cracking and ravelling have no side parent. Their top table is lane-wise
+(cracking at the D2 CA interval, ravelling at 100 m) and parent_id is null.
+Every 10 m piece is two rows, As per CA and As per IRC. IRC breaches only when
+the value is strictly greater than the fixed cut.
 """
 
 from __future__ import annotations
 
 import json
 import math
+from io import BytesIO
+from pathlib import Path
 
 import pandas as pd
 
+from ris_silver.domain.images import image_fields
 from ris_silver.domain.lanes import direction_of_lane, normalize_lane, side_of_lane
 from ris_silver.domain.metrics import bi_from_iri, lane_iri
-from ris_silver.domain.spec import POTHOLE_TABLE, linear_specs
+from ris_silver.domain.spec import CHAINAGE_TABLE, POTHOLE_TABLE, linear_specs, output_tables, top_table
 
 _LINEAR = ("roughness", "rutting", "ravelling", "cracking")
 
@@ -215,7 +221,17 @@ def _child_rows(lane_rows: pd.DataFrame, upc: str, table: str, kind: str, parent
     return rows
 
 
-def _child_10m(frame: pd.DataFrame, upc: str, table: str, parent_length: int, ca_threshold: float, irc_threshold: float) -> list[dict]:
+def _link_id(upc: str, row, link: str, length: int) -> tuple[str, int]:
+    start = min(row["start_chainage"], row["end_chainage"])
+    opened = bin_start(start, length)
+    if link == "side":
+        side = row["side"] if isinstance(row.get("side"), str) else side_of_lane(row["lane"])
+        return parent_id(upc, side, opened, length), opened
+    return f"{upc}_{row['lane']}_{opened}_{opened + length}", opened
+
+
+def _ten_rows(frame: pd.DataFrame, upc: str, table: str, link_length: int, ca_threshold: float, irc_threshold: float, link: str) -> list[dict]:
+    """Two rows per piece: As per CA, then As per IRC. IRC breach is metric > cut."""
     if frame is None or frame.empty:
         return []
     rows = []
@@ -223,37 +239,100 @@ def _child_10m(frame: pd.DataFrame, upc: str, table: str, parent_length: int, ca
         metric = _num(row["metric_value"])
         ca_breach = int(row["ca_breach"]) if _num(row.get("ca_breach")) is not None else 0
         irc_breach = _flag_gt(metric, irc_threshold)
-        breach = max(ca_breach, irc_breach)
-        parent_bin = bin_start(min(row["start_chainage"], row["end_chainage"]), parent_length)
         side = row["side"] if isinstance(row.get("side"), str) else side_of_lane(row["lane"])
         length = _num(row.get("length_m")) or 0.0
-        rows.append({
-            "id": f"{upc}_{table}_{row['lane']}_{int(row['start_chainage'])}_{int(row['end_chainage'])}",
+        pid, opened = _link_id(upc, row, link, link_length)
+        start = int(row["start_chainage"])
+        end = int(row["end_chainage"])
+        shared = {
             "collection_name": table,
             "level": "child_10m",
             "upc": upc,
             "lane": row["lane"],
             "side": side,
             "direction": direction_of_lane(row["lane"]),
-            "parent_id": parent_id(upc, side, parent_bin, parent_length),
-            "start_chainage": int(row["start_chainage"]),
-            "end_chainage": int(row["end_chainage"]),
+            "parent_id": pid,
+            "start_chainage": start,
+            "end_chainage": end,
             "length_m": length,
-            "parent_start_chainage": parent_bin,
-            "parent_end_chainage": parent_bin + parent_length,
+            "parent_start_chainage": opened,
+            "parent_end_chainage": opened + link_length,
             "reporting_interval_m": 10,
             "metric_value": metric,
-            "breach_flag": breach,
-            "threshold_name": "As per CA & IRC",
-            "threshold_value": None,
-            "ca_threshold_value": float(ca_threshold),
-            "irc_threshold_value": float(irc_threshold),
-            "ca_breach_flag": ca_breach,
-            "irc_breach_flag": irc_breach,
-            "affected_length": length if breach else 0.0,
             "display_defect_id": None,
+            **image_fields(row.get("image_name")),
+        }
+        rows.append({
+            **shared,
+            "id": f"{upc}_{table}_{row['lane']}_{start}_{end}_ca",
+            "breach_flag": ca_breach,
+            "threshold_name": "As per CA",
+            "threshold_value": float(ca_threshold),
+            "ca_breach_flag": ca_breach,
+            "affected_length": length if ca_breach else 0.0,
+            "affected_length_ca": length if ca_breach else 0.0,
+            "affected_length_irc": 0.0,
+        })
+        rows.append({
+            **shared,
+            "id": f"{upc}_{table}_{row['lane']}_{start}_{end}_irc",
+            "breach_flag": irc_breach,
+            "threshold_name": "As per IRC",
+            "threshold_value": float(irc_threshold),
+            "affected_length": length if irc_breach else 0.0,
+            "affected_length_ca": 0.0,
+            "affected_length_irc": length if irc_breach else 0.0,
         })
     return rows
+
+
+def _lane_top(lane_rows: pd.DataFrame, upc: str, table: str, interval: int, ca_threshold: float, level_name: str) -> list[dict]:
+    """Lane-wise top rows. parent_id is a temporary lane-bin key, cleared after the 10 m link."""
+    if lane_rows is None or lane_rows.empty:
+        return []
+    rows = []
+    for _, row in lane_rows.iterrows():
+        opened = int(row["bin"])
+        metric = _num(row["metric_value"])
+        breach = int(row["ca_breach"])
+        length = _num(row["length_m"]) or 0.0
+        start = int(row["start_chainage"])
+        end = int(row["end_chainage"])
+        rows.append({
+            "id": f"{upc}_{table}_{row['lane']}_{start}_{end}",
+            "collection_name": table,
+            "level": level_name,
+            "upc": upc,
+            "lane": row["lane"],
+            "side": row["side"],
+            "direction": row["direction"],
+            "parent_id": f"{upc}_{row['lane']}_{opened}_{opened + interval}",
+            "start_chainage": start,
+            "end_chainage": end,
+            "length_m": length,
+            "parent_start_chainage": opened,
+            "parent_end_chainage": opened + interval,
+            "reporting_interval_m": interval,
+            "metric_value": metric,
+            "breach_flag": breach,
+            "threshold_name": "As per CA",
+            "threshold_value": float(ca_threshold),
+            "ca_breach_flag": breach,
+            "affected_length": length if breach else 0.0,
+            "affected_length_ca": length if breach else 0.0,
+            "affected_length_irc": 0.0,
+            "display_defect_id": None,
+            "total_children": 1,
+        })
+    return rows
+
+
+def _bind_lane_children(top_rows: list[dict], child_rows: list[dict]) -> None:
+    lookup = {row["parent_id"]: row["id"] for row in top_rows}
+    for row in child_rows:
+        row["parent_id"] = lookup.get(row["parent_id"])
+    for row in top_rows:
+        row["parent_id"] = None
 
 
 def _pothole_rows(frame: pd.DataFrame, upc: str, threshold_name: str) -> list[dict]:
@@ -283,7 +362,7 @@ def _pothole_rows(frame: pd.DataFrame, upc: str, threshold_name: str) -> list[di
             "breach_flag": 1,
             "threshold_name": threshold_name,
             "threshold_value": 0.0,
-            "image_name": None if pd.isna(row.get("Image_Name")) else row.get("Image_Name"),
+            **image_fields(row.get("Image_Name")),
             "display_defect_id": None,
         })
     return rows
@@ -308,11 +387,11 @@ def _stamp_top(rows: list[dict], seq: int, date_str: str) -> int:
     return seq + len(breach_rows)
 
 
-def _stamp_children(children: list[dict], parents: list[dict], seq: int, date_str: str) -> int:
+def _stamp_children(children: list[dict], parents: list[dict], seq: int, date_str: str, key: str = "parent_id") -> int:
     lookup = {
-        row["parent_id"]: row["display_defect_id"]
+        row[key]: row["display_defect_id"]
         for row in parents
-        if row.get("display_defect_id")
+        if row.get("display_defect_id") and row.get(key) is not None
     }
     linked: dict[str, list[dict]] = {}
     orphans = []
@@ -330,40 +409,111 @@ def _stamp_children(children: list[dict], parents: list[dict], seq: int, date_st
     return _stamp_top(orphans, seq, date_str)
 
 
+def survey_date_token(survey_end) -> str:
+    return survey_end.strftime("%d%m%y") if hasattr(survey_end, "strftime") else "000000"
+
+
+def _top_seq(value, date_str: str) -> int | None:
+    """The counter on a top-level id ``D/{date}/N/00007``. A child suffix does not count."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        return None
+    parts = str(value).split("/")
+    if len(parts) != 4 or parts[0] != "D" or parts[1] != date_str or parts[2] not in {"N", "D", "R", "O"}:
+        return None
+    if not parts[3].isdigit():
+        return None
+    return int(parts[3])
+
+
+def existing_top_sequence(ctx, date_str: str, tables: list[str]) -> int:
+    """Highest top-level display counter already stored for other UPCs on this survey date."""
+    from ris_silver.io.paths import silver_latest_parquet_path
+
+    best = 0
+    for name in tables:
+        if name == CHAINAGE_TABLE:
+            continue
+        frame = _read_latest(silver_latest_parquet_path(ctx, name))
+        if frame is None or "display_defect_id" not in frame.columns or "upc_code" not in frame.columns:
+            continue
+        others = frame["upc_code"].astype(str) != str(ctx.upc)
+        for value in frame.loc[others, "display_defect_id"]:
+            seq = _top_seq(value, date_str)
+            if seq is not None and seq > best:
+                best = seq
+    return best
+
+
+def _read_latest(path):
+    if path is None:
+        return None
+    if str(path).startswith("s3://"):
+        from ris_silver.io.writer import _exists, _s3_get
+
+        if not _exists(path):
+            return None
+        return pd.read_parquet(BytesIO(_s3_get(path)))
+    file = Path(path)
+    if not file.is_file():
+        return None
+    return pd.read_parquet(file)
+
+
 def assign_display_ids(tables: dict[str, list[dict]], specs: dict, date_str: str, start_seq: int = 0) -> int:
-    """Breach parents are numbered first. A breach child uses the parent's id, or its own if the parent is clean."""
+    """Breach top rows are numbered first. A breach child uses that id, or its own if the top row is clean."""
     seq = start_seq
     order = list(_LINEAR) + ["pothole"]
-    parent_name = {defect: specs[defect].parent.table for defect in _LINEAR}
-    parent_name["pothole"] = POTHOLE_TABLE
+    tops = {defect: top_table(specs[defect]) for defect in _LINEAR}
+    tops["pothole"] = POTHOLE_TABLE
     for defect in order:
-        seq = _stamp_top(tables.get(parent_name[defect], []), seq, date_str)
+        seq = _stamp_top(tables.get(tops[defect], []), seq, date_str)
     for defect in _LINEAR:
-        parents = tables.get(parent_name[defect], [])
-        for level in specs[defect].children:
-            seq = _stamp_children(tables.get(level.table, []), parents, seq, date_str)
+        spec = specs[defect]
+        parents = tables.get(tops[defect], [])
+        key = "parent_id" if spec.parent is not None else "id"
+        for level in spec.children:
+            if level.table == tops[defect]:
+                continue
+            seq = _stamp_children(tables.get(level.table, []), parents, seq, date_str, key)
     return seq
 
 
-def build_silver_tables(canonical: dict, potholes, upc: str, specs: dict, ca: dict, irc: dict, ca_interval_m: int, survey_end, pothole_threshold_name: str = "As per CA") -> dict[str, pd.DataFrame]:
+def build_silver_tables(canonical: dict, potholes, upc: str, specs: dict, ca: dict, irc: dict, ca_interval_m: int, survey_end, pothole_threshold_name: str = "As per CA", start_seq: int = 0) -> dict[str, pd.DataFrame]:
     tables: dict[str, list[dict]] = {}
     for defect in _LINEAR:
         spec = specs[defect]
-        parent_length = int(spec.parent.length_m)
-        lanes_parent = rollup_lanes(canonical.get(defect), defect, parent_length, ca[defect])
-        tables[spec.parent.table] = _parent_rows(lanes_parent, upc, spec.parent.table, parent_length, ca[defect])
-        lanes_100 = rollup_lanes(canonical.get(defect), defect, 100, ca[defect]) if parent_length != 100 else lanes_parent
-        lanes_ca = rollup_lanes(canonical.get(defect), defect, ca_interval_m, ca[defect])
-        for level in spec.children:
-            if level.kind == "ca":
-                tables[level.table] = _child_rows(lanes_ca, upc, level.table, "ca", parent_length, ca[defect], irc[defect], ca_interval_m)
-            elif level.kind == "irc100":
-                tables[level.table] = _child_rows(lanes_100, upc, level.table, "irc100", parent_length, ca[defect], irc[defect], 100)
-            elif level.kind == "10m":
-                tables[level.table] = _child_10m(canonical.get(defect), upc, level.table, parent_length, ca[defect], irc[defect])
+        ca_len = int(spec.ca_interval_m or ca_interval_m)
+        frame = canonical.get(defect)
+        if spec.parent is not None:
+            parent_length = int(spec.parent.length_m)
+            lanes_parent = rollup_lanes(frame, defect, parent_length, ca[defect])
+            tables[spec.parent.table] = _parent_rows(lanes_parent, upc, spec.parent.table, parent_length, ca[defect])
+            for level in spec.children:
+                if level.kind == "ca":
+                    lanes_ca = lanes_parent if ca_len == parent_length else rollup_lanes(frame, defect, ca_len, ca[defect])
+                    tables[level.table] = _child_rows(
+                        lanes_ca, upc, level.table, "ca", parent_length, ca[defect], irc[defect], ca_len,
+                    )
+                elif level.kind == "10m":
+                    tables[level.table] = _ten_rows(frame, upc, level.table, parent_length, ca[defect], irc[defect], "side")
+            continue
+        lanes = rollup_lanes(frame, defect, ca_len, ca[defect])
+        top_name = top_table(spec)
+        level_name = "as_per_ca" if defect == "cracking" else "master"
+        top_rows = _lane_top(lanes, upc, top_name, ca_len, ca[defect], level_name)
+        ten_name = next(level.table for level in spec.children if level.kind == "10m")
+        ten_rows = _ten_rows(frame, upc, ten_name, ca_len, ca[defect], irc[defect], "lane")
+        _bind_lane_children(top_rows, ten_rows)
+        tables[top_name] = top_rows
+        tables[ten_name] = ten_rows
     tables[POTHOLE_TABLE] = _pothole_rows(potholes, upc, pothole_threshold_name)
-    date_str = survey_end.strftime("%d%m%y") if hasattr(survey_end, "strftime") else "000000"
-    assign_display_ids(tables, specs, date_str)
+    date_str = survey_date_token(survey_end)
+    assign_display_ids(tables, specs, date_str, start_seq)
     return {name: pd.DataFrame(rows) for name, rows in tables.items()}
 
 
@@ -386,6 +536,9 @@ def build_hierarchy(ctx):
     correction = ctx.frames.get("correction") or {}
     ca_interval = int(correction.get("ca_interval_m") or intervals["child_100m"])
     survey_end = (ctx.frames.get("tracker") or {}).get("survey_end_date")
+    date_str = survey_date_token(survey_end)
+    start_seq = existing_top_sequence(ctx, date_str, output_tables(specs))
+    print(f"Display ID date {date_str} | counter continues after {start_seq}")
     threshold_name = "As per CA"
     tracker = ctx.frames.get("tracker") or {}
     override = tracker.get("threshold_label_override")
@@ -401,6 +554,7 @@ def build_hierarchy(ctx):
         ca_interval,
         survey_end,
         threshold_name,
+        start_seq,
     )
     summary = []
     for name, frame in ctx.frames["tables"].items():

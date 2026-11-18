@@ -39,7 +39,7 @@ resolve_runtime_s3_paths
 BRONZE_NSV_UPC_S3="${BRONZE_NSV_ROOT%/}/${PREFIX}"
 BRONZE_BACKUP_UPC_S3="${BRONZE_NSV_BACKUP_ROOT%/}/${PREFIX}"
 
-mkdir -p "${LOCAL_BRONZE}" "${LOCAL_SILVER}" "${WORK}/images" "${ROOT}/logs"
+mkdir -p "${LOCAL_BRONZE}" "${LOCAL_SILVER}" "${ROOT}/logs"
 
 log() {
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "${LOG_FILE}"
@@ -125,13 +125,14 @@ else
 fi
 
 # Python reads a local tree. S3 URIs are used only by the shell sync/upload steps.
+# Images are the jpg/png files already inside this UPC's NSV deliverables, including D3.
 export BRONZE_S3_ROOT=""
 export SILVER_S3_ROOT=""
 export TRACKER_S3=""
 export BRONZE_ROOT="${LOCAL_BRONZE}"
 export SILVER_ROOT="${LOCAL_SILVER}"
 export TRACKER_PATH="${TRACKER_FILE}"
-export IMAGE_ROOT="${WORK}/images"
+export IMAGE_ROOT="${LOCAL_BRONZE}/Source=NSV/${PREFIX}"
 export PYTHONPATH="${ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 export PYTHONUNBUFFERED=1
 

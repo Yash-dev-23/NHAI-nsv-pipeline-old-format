@@ -1,7 +1,9 @@
-"""Lane × 10 m frames. One row per backup segment, copied onto the 10 m grid when the segment is longer.
+"""Lane frames. A backup row longer than 10 m is split from its own start chainage.
 
-Roughness metric is BI, then IRI. That is the value the 10 m table carries forward.
-Cracking CA breach is value > threshold. Every other 10 m breach flag is value >= threshold.
+103–118 becomes 103–113 and 113–118. The start is not snapped onto the 10 m grid.
+Roughness metric is BI, then IRI. Cracking CA breach is value > threshold.
+Every other breach flag is value >= threshold. Lat, area, wheel-path values,
+crack width, and the image name stay on every piece.
 """
 
 from __future__ import annotations
@@ -92,26 +94,32 @@ def _chainage(row) -> tuple[int | None, int | None]:
     return start, end
 
 
-def expand_to_10m(rows: list[dict]) -> list[dict]:
-    """Copy a segment onto each 10 m slice. The first slice keeps the real start chainage."""
+def expand_to_10m(rows: list[dict], step: int = 10) -> list[dict]:
+    """Split from the row's own start. A row of ``step`` metres or less stays one piece.
+
+    Chainage is rounded to the nearest metre first. The last piece ends at the
+    real end, so it can be shorter than ``step``.
+    """
     expanded = []
     for row in rows:
-        start, end = row["start_chainage"], row["end_chainage"]
+        start, end = row.get("start_chainage"), row.get("end_chainage")
         if start is None or end is None or end <= start:
-            expanded.append(row)
+            expanded.append(dict(row))
             continue
-        start_aligned = int(round(start / 10)) * 10
-        end_aligned = int(round(end / 10)) * 10
-        if end_aligned <= start_aligned:
-            end_aligned = start_aligned + 10
-        first = True
-        for seg_start in range(start_aligned, end_aligned, 10):
+        start = int(round(float(start)))
+        end = int(round(float(end)))
+        if end <= start:
             piece = dict(row)
-            piece["start_chainage"] = int(round(start)) if first else seg_start
-            piece["end_chainage"] = seg_start + 10
+            piece["start_chainage"] = start
+            piece["end_chainage"] = end
+            expanded.append(piece)
+            continue
+        for seg_start in range(start, end, step):
+            piece = dict(row)
+            piece["start_chainage"] = seg_start
+            piece["end_chainage"] = min(seg_start + step, end)
             piece["length_m"] = piece["end_chainage"] - piece["start_chainage"]
             expanded.append(piece)
-            first = False
     return expanded
 
 
@@ -202,7 +210,10 @@ def _frame(defect: str, source, ca_threshold, irc_threshold) -> pd.DataFrame:
             extra = {
                 "cracking_pct": metric,
                 "area_sq_m": _float(row.get("Area_sq_m")),
-                "image_name": None if pd.isna(row.get("Image_Name")) else row.get("Image_Name"),
+                "image_name": _text(row.get("Image_Name")),
+                "crack_count": _float(row.get("crack_count")),
+                "avg_corrected_width_mm": _float(row.get("avg_corrected_width_mm")),
+                "avg_width_mm": _float(row.get("avg_width_mm")),
             }
             ca_breach = _flag_gt(metric, ca_threshold)
             irc_breach = _flag_ge(metric, irc_threshold)

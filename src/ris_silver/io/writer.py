@@ -18,9 +18,11 @@ from botocore.exceptions import ClientError
 
 from ris_silver.app import PathsMissing
 from ris_silver.context import RunContext
+from ris_silver.domain.spec import CHAINAGE_TABLE
+from ris_silver.domain.table_contract import align_frame, chainage_columns, has_contract
 from ris_silver.io.paths import (
     PathLike,
-    silver_latest_csv_path,
+    silver_latest_csv_path, 
     silver_latest_parquet_path,
     silver_partition_dir,
 )
@@ -33,13 +35,37 @@ def publish(ctx: RunContext, tables: dict | None = None) -> dict[str, int]:
     frames = tables if tables is not None else (ctx.frames.get("tables") or {})
     counts = {}
     for name, frame in frames.items():
-        published = _with_run_metadata(ctx, frame)
+        published = _align_output(name, _with_run_metadata(ctx, frame))
         output_directory = silver_partition_dir(ctx, name)
         _write_table_pair(output_directory, name, published)
         _upsert_latest(ctx, name, published)
         counts[name] = len(published)
     print("publish: " + ", ".join(f"{name}={count}" for name, count in counts.items()))
     return counts
+
+
+def _align_output(table_name: str, frame: pd.DataFrame) -> pd.DataFrame:
+    """Known tables are written in contract order. Other names stay as built.
+
+    Chainage keeps L1–R2 and any extra lane already on the frame. A fixed
+    54-column reindex would drop L3 when one UPC has it and another does not.
+    """
+    if table_name == CHAINAGE_TABLE:
+        return frame.reindex(columns=chainage_columns(_chainage_lanes(frame)))
+    if not has_contract(table_name):
+        return frame
+    return align_frame(frame, table_name)
+
+
+def _chainage_lanes(frame: pd.DataFrame) -> list[str]:
+    lanes = []
+    for name in frame.columns:
+        head, _, _tail = str(name).partition("_")
+        if len(head) > 1 and head[0] in "lr" and head[1].isdigit() and str(name).endswith("_start_chainage"):
+            lane = head.upper()
+            if lane not in lanes:
+                lanes.append(lane)
+    return lanes
 
 
 def _with_run_metadata(ctx: RunContext, frame) -> pd.DataFrame:
@@ -75,7 +101,7 @@ def _upsert_latest(ctx: RunContext, table_name: str, current: pd.DataFrame) -> N
         )
         previous = previous.loc[~same_identity]
 
-    merged = pd.concat([previous, current], ignore_index=True, sort=False)
+    merged = _align_output(table_name, pd.concat([previous, current], ignore_index=True, sort=False))
     _write_frame(parquet_path, merged, file_format="parquet")
     _write_frame(csv_path, merged, file_format="csv")
 

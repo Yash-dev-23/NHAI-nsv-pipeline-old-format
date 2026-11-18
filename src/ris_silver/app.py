@@ -237,6 +237,7 @@ def execute(ctx: RunContext) -> dict:
     from ris_silver.domain.ratings import enrich
     from ris_silver.ingest.calibration import run_correction
     from ris_silver.ingest.load import load_facts, load_reference
+    from ris_silver.domain.images import upload_defect_images
     from ris_silver.io.writer import publish
     from ris_silver.quality.checks import validate
 
@@ -248,6 +249,7 @@ def execute(ctx: RunContext) -> dict:
     enrich(ctx)
     build_chainage(ctx)
     publish(ctx)
+    upload_defect_images(ctx)
     validate(ctx)
     for name in STAGES:
         if name == "resolve_run":

@@ -20,7 +20,7 @@ def _coerce(value: str):
 
 
 def load_yaml(text: str) -> dict:
-    root: dict = {}
+    root: dict = {} 
     stack: list[tuple[int, dict]] = [(-1, root)]
     for raw in text.splitlines():
         if not raw.strip() or raw.lstrip().startswith("#"):

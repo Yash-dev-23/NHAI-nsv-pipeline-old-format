@@ -1,7 +1,8 @@
 """Read the published partition back and compare it with the frames that were built.
 
-V1 counts, V2 parents, V3 CA children, V4 IRC 100 m, V5 10 m, V6 potholes,
-V7 links, V8 display ids, V9 chainage. WARN does not stop the run. FAIL does.
+V1 counts, V2 side parents, V3 CA children, V5 10 m pairs, V6 potholes,
+V7 links, V8 display ids, V9 chainage. IRC 100 m tables are not published.
+WARN does not stop the run. FAIL does.
 """
 
 from __future__ import annotations
@@ -13,7 +14,8 @@ import pandas as pd
 
 from ris_silver.domain.hierarchy import rollup_lanes
 from ris_silver.domain.lanes import normalize_lane
-from ris_silver.domain.spec import POTHOLE_TABLE, CHAINAGE_TABLE, linear_specs
+from ris_silver.domain.spec import POTHOLE_TABLE, CHAINAGE_TABLE, linear_specs, top_table
+from ris_silver.domain.table_contract import align_frame
 from ris_silver.io.paths import silver_partition_dir, silver_parquet_path
 from ris_silver.io.writer import _write_table_pair
 from ris_silver.quality.report import build_report
@@ -22,8 +24,7 @@ CHECKS = (
     "V1 every table is written and the stored row count matches the built frame",
     "V2 one parent row per side per bin, value is the lane average, breach if any lane breaches",
     "V3 CA child uses the survey CA interval and the CA breach rule",
-    "V4 IRC 100 m child, one row per lane, breach when the value is above the IRC cut",
-    "V5 10 m child, one row per lane, breach when CA or IRC fails",
+    "V5 10 m child, one As per CA row and one As per IRC row per piece, ids unique",
     "V6 one row per pothole and every display id is unique",
     "V7 every child parent_id exists, and the side follows the lane",
     "V8 breach rows have a display id, clean rows do not, and a child id extends its parent id",
@@ -145,7 +146,7 @@ def _parent_checks(rows, defect, table, frame, lanes, length, threshold):
     _rec(rows, "V2 Parent", f"CA threshold = {threshold}", table, len(parent), int((~_close(parent["threshold_value"], threshold)).sum()))
 
 
-def _ca_child(rows, defect, table, frame, threshold, interval):
+def _ca_child(rows, defect, table, frame, threshold, interval, source):
     _rec(rows, "V3 CA child", f"CA threshold = {threshold}", table, len(frame) if _ready(frame, "threshold_value") else 0,
          int((~_close(frame["threshold_value"], threshold)).sum()) if _ready(frame, "threshold_value") else 0)
     if not _ready(frame, "metric_value", "breach_flag"):
@@ -155,57 +156,70 @@ def _ca_child(rows, defect, table, frame, threshold, interval):
         expected = (metric > threshold).astype(int) if defect == "cracking" else (metric >= threshold).astype(int)
         _rec(rows, "V3 CA child", "CA breach rule (metric vs CA threshold)", table, len(frame), int((_num(frame["breach_flag"]) != expected).sum()))
     _interval_checks(rows, "V3 CA child", table, frame, interval)
-    _rec(rows, "V3 CA child", "interval source: D2 CA", table, 1, 0, f"{interval} m")
-
-
-def _irc_child(rows, table, frame, lanes, threshold):
-    built = 0 if lanes is None or lanes.empty else len(lanes)
-    _rec(rows, "V4 IRC 100m", "one row per lane-wise 100m row", table, built, abs((0 if frame is None else len(frame)) - built), f"{0 if frame is None else len(frame)} vs {built}")
-    if not _ready(frame, "metric_value", "breach_flag", "threshold_value"):
-        _rec(rows, "V4 IRC 100m", f"IRC threshold = {threshold}", table, 0, 0)
-        _rec(rows, "V4 IRC 100m", f"IRC breach rule (metric > {threshold})", table, 0, 0)
-    else:
-        _rec(rows, "V4 IRC 100m", f"IRC threshold = {threshold}", table, len(frame), int((~_close(frame["threshold_value"], threshold)).sum()))
-        expected = (_num(frame["metric_value"]) > threshold).astype(int)
-        _rec(rows, "V4 IRC 100m", f"IRC breach rule (metric > {threshold})", table, len(frame), int((_num(frame["breach_flag"]) != expected).sum()))
-    _interval_checks(rows, "V4 IRC 100m", table, frame, 100)
+    _rec(rows, "V3 CA child", f"interval source: {source}", table, 1, 0, f"{interval} m")
 
 
 def _ten_metre(rows, table, frame, source, threshold):
-    if source is None or source.empty:
-        lane_rows = pd.DataFrame(columns=["lane", "start_chainage", "s_ca"])
+    if source is None or source.empty or "start_chainage" not in source.columns:
+        lane_rows = pd.DataFrame(columns=["lane", "start_chainage", "s_ca", "metric_value"])
     else:
-        lane_rows = source[["lane", "start_chainage", "ca_breach"]].rename(columns={"ca_breach": "s_ca"}).copy()
+        lane_rows = source.dropna(subset=["start_chainage"])[["lane", "start_chainage", "ca_breach", "metric_value"]].rename(columns={"ca_breach": "s_ca"}).copy()
         lane_rows["start_chainage"] = pd.to_numeric(lane_rows["start_chainage"], errors="coerce").astype("float64")
-    actual = 0 if frame is None else len(frame)
-    _rec(rows, "V5 10m", "one row per lane-wise 10m CA row", table, len(lane_rows), abs(actual - len(lane_rows)), f"{actual} vs {len(lane_rows)}")
-    if not _ready(frame, "lane", "start_chainage", "metric_value", "ca_breach_flag", "irc_breach_flag", "breach_flag", "irc_threshold_value"):
+    if not _ready(frame, "lane", "start_chainage", "metric_value", "breach_flag", "threshold_name", "threshold_value"):
         for check in (
-            "ca_breach_flag = lane-wise CA row",
-            f"irc_breach_flag = metric > {threshold} (IRC)",
-            "breach_flag = CA or IRC",
-            f"IRC threshold column = {threshold}",
+            "only As per CA / As per IRC rows",
+            "one As per CA row per lane-wise 10m row",
+            "one As per IRC row per lane-wise 10m row",
+            "CA breach_flag = lane-wise CA row",
+            f"IRC breach rule (metric > {threshold})",
+            f"IRC threshold = {threshold}",
+            "id unique",
         ):
             _rec(rows, "V5 10m", check, table, 0, 0)
         return
     child = frame.copy()
     child["start_chainage"] = pd.to_numeric(child["start_chainage"], errors="coerce").astype("float64")
-    joined = child.merge(lane_rows, on=["lane", "start_chainage"], how="left")
-    _rec(rows, "V5 10m", "ca_breach_flag = lane-wise CA row", table, len(joined), int((_num(joined["ca_breach_flag"]) != _num(joined["s_ca"])).sum()))
-    irc_expected = (_num(joined["metric_value"]) > threshold).astype(int)
-    _rec(rows, "V5 10m", f"irc_breach_flag = metric > {threshold} (IRC)", table, len(joined), int((_num(joined["irc_breach_flag"]) != irc_expected).sum()))
-    combined = np.maximum(_num(joined["ca_breach_flag"]).to_numpy(), _num(joined["irc_breach_flag"]).to_numpy())
-    _rec(rows, "V5 10m", "breach_flag = CA or IRC", table, len(joined), int((_num(joined["breach_flag"]).to_numpy() != combined).sum()))
-    _rec(rows, "V5 10m", f"IRC threshold column = {threshold}", table, len(child), int((~_close(child["irc_threshold_value"], threshold)).sum()))
+    names = child["threshold_name"].isin(["As per CA", "As per IRC"])
+    ca_rows = child[child["threshold_name"] == "As per CA"]
+    irc_rows = child[child["threshold_name"] == "As per IRC"]
+    _rec(rows, "V5 10m", "only As per CA / As per IRC rows", table, len(child), int((~names).sum()))
+    _rec(
+        rows, "V5 10m", "one As per CA row per lane-wise 10m row", table, len(lane_rows),
+        abs(len(ca_rows) - len(lane_rows)), f"{len(ca_rows)} vs {len(lane_rows)}",
+    )
+    _rec(
+        rows, "V5 10m", "one As per IRC row per lane-wise 10m row", table, len(lane_rows),
+        abs(len(irc_rows) - len(lane_rows)), f"{len(irc_rows)} vs {len(lane_rows)}",
+    )
+    joined = ca_rows.merge(lane_rows, on=["lane", "start_chainage"], how="left")
+    _rec(
+        rows, "V5 10m", "CA breach_flag = lane-wise CA row", table, len(joined),
+        int((_num(joined["breach_flag"]) != _num(joined["s_ca"])).sum()) if len(joined) else 0,
+    )
+    irc_expected = (_num(irc_rows["metric_value"]) > threshold).astype(int)
+    _rec(
+        rows, "V5 10m", f"IRC breach rule (metric > {threshold})", table, len(irc_rows),
+        int((_num(irc_rows["breach_flag"]) != irc_expected).sum()) if len(irc_rows) else 0,
+    )
+    _rec(rows, "V5 10m", f"IRC threshold = {threshold}", table, len(irc_rows), int((~_close(irc_rows["threshold_value"], threshold)).sum()) if len(irc_rows) else 0)
+    if "id" not in child.columns:
+        _rec(rows, "V5 10m", "id unique", table, 0, 0)
+    else:
+        _rec(rows, "V5 10m", "id unique", table, len(child), int(child["id"].duplicated().sum()))
 
 
-def _links_and_ids(rows, parent_name, parent, children: list[tuple[str, pd.DataFrame]]):
-    if not _ready(parent, "parent_id"):
+def _links_and_ids(rows, parent_name, parent, children: list[tuple[str, pd.DataFrame]], link_on: str = "parent_id"):
+    if not _ready(parent, link_on):
         parent_ids = set()
         parent_display = {}
     else:
-        parent_ids = set(parent["parent_id"])
-        parent_display = parent.drop_duplicates("parent_id").set_index("parent_id")["display_defect_id"].to_dict()
+        parent_ids = set(parent[link_on].dropna())
+        parent_display = parent.dropna(subset=[link_on]).drop_duplicates(link_on).set_index(link_on)["display_defect_id"].to_dict()
+    if link_on == "id":
+        if _ready(parent, "parent_id"):
+            _rec(rows, "V7 Links", "top table (no parent) has parent_id NULL", parent_name, len(parent), int(parent["parent_id"].notna().sum()))
+        else:
+            _rec(rows, "V7 Links", "top table (no parent) has parent_id NULL", parent_name, 0, 0)
     for name, frame in [(parent_name, parent), *children]:
         if not _ready(frame, "breach_flag", "display_defect_id"):
             for check in (
@@ -304,21 +318,28 @@ def run_checks(ctx, tables: dict | None = None, published: dict | None = None) -
         _rec(rows, "V1 Tables", "stored rows = built rows", name, built_count, abs(stored_count - built_count), f"stored {stored_count} / built {built_count}")
     for defect in _LINEAR:
         spec = specs[defect]
-        parent = stored.get(spec.parent.table, pd.DataFrame())
-        lanes_parent = rollup_lanes(canonical.get(defect), defect, int(spec.parent.length_m), ca[defect])
-        _parent_checks(rows, defect, spec.parent.table, parent, lanes_parent, int(spec.parent.length_m), ca[defect])
+        interval = int(spec.ca_interval_m or ca_interval)
         children = []
         for level in spec.children:
             frame = stored.get(level.table, pd.DataFrame())
             children.append((level.table, frame))
             if level.kind == "ca":
-                _ca_child(rows, defect, level.table, frame, ca[defect], ca_interval)
-            elif level.kind == "irc100":
-                lanes_100 = rollup_lanes(canonical.get(defect), defect, 100, ca[defect])
-                _irc_child(rows, level.table, frame, lanes_100, irc[defect])
+                source = "fixed in TABLE_SPEC" if spec.ca_interval_m is not None else (
+                    "D2 CA" if correction.get("ca_interval_m") else "default 100m"
+                )
+                _ca_child(rows, defect, level.table, frame, ca[defect], interval, source)
             elif level.kind == "10m":
                 _ten_metre(rows, level.table, frame, canonical.get(defect), irc[defect])
-        _links_and_ids(rows, spec.parent.table, parent, children)
+        if spec.parent is not None:
+            parent = stored.get(spec.parent.table, pd.DataFrame())
+            lanes_parent = rollup_lanes(canonical.get(defect), defect, int(spec.parent.length_m), ca[defect])
+            _parent_checks(rows, defect, spec.parent.table, parent, lanes_parent, int(spec.parent.length_m), ca[defect])
+            _links_and_ids(rows, spec.parent.table, parent, children)
+        else:
+            top_name = top_table(spec)
+            top = stored.get(top_name, pd.DataFrame())
+            linked = [(name, frame) for name, frame in children if name != top_name]
+            _links_and_ids(rows, top_name, top, linked, link_on="id")
     potholes = stored.get(POTHOLE_TABLE, pd.DataFrame())
     source = (ctx.frames.get("facts") or {}).get("potholes")
     source_count = 0 if source is None else len(source)
@@ -347,6 +368,8 @@ def validate(ctx):
         report["zone"] = ctx.zone
         report["phase"] = str(ctx.phase)
         report["cycle"] = str(ctx.cycle)
+        report["validation_ts"] = pd.Timestamp.now()
+        report = align_frame(report, "dlm_validation_results")
         _write_table_pair(directory, "dlm_validation_results", report)
     counts = Counter(row["status"] for row in results)
     print("validate: " + ", ".join(f"{status}={counts[status]}" for status in ("PASS", "WARN", "FAIL", "SKIP") if counts[status]))

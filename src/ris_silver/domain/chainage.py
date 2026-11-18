@@ -10,18 +10,20 @@ import math
 import pandas as pd
 
 from ris_silver.domain.lanes import normalize_lane
-from ris_silver.domain.ratings import prepare_carriageway, prepare_lrms, prepare_pavement, road_context
+from ris_silver.domain.ratings import (
+    pavement_for_span,
+    prepare_carriageway,
+    prepare_lrms,
+    prepare_pavement,
+    road_context,
+)
 from ris_silver.domain.spec import CHAINAGE_TABLE
+from ris_silver.domain.table_contract import chainage_columns
 
 _DEFECTS = ("roughness", "rutting", "ravelling", "cracking")
 _GPS = ("start_lat", "start_long", "end_lat", "end_long")
 _TEXT = ("pavement_type", "nh_number", "section_code", "carriageway")
 _GRID = 10
-_FRONT = (
-    "upc", "upc_code", "zone", "phase", "cycle",
-    "chainage_start", "chainage_end", "upc_start_chainage", "upc_end_chainage",
-    "lanes_present", "nh_number", "section_code", "carriageway",
-)
 
 
 def _lane_key(lane: str):
@@ -79,6 +81,7 @@ def _pieces(canonical: dict, lrms, pavement, carriageway) -> pd.DataFrame:
             if lane is None:
                 continue
             context = road_context(lrms, pavement, carriageway, start, lane, row.get("direction"))
+            context["pavement_type"] = pavement_for_span(pavement, start, end, lane, row.get("direction"))
             rows.append({
                 "seq": seq,
                 "lane": lane,
@@ -142,18 +145,11 @@ def build_master_chainage(canonical: dict, d1: dict, upc: str, zone: str, phase:
     pavement = prepare_pavement(d1.get("pavement"))
     carriageway = prepare_carriageway(d1.get("carriageway"))
     pieces = _pieces(canonical, lrms, pavement, carriageway)
-    front = list(_FRONT) + ["created_at"]
     if pieces.empty:
-        return pd.DataFrame(columns=front)
+        return pd.DataFrame(columns=chainage_columns())
     bins = _lane_bins(pieces)
-    lanes = sorted(bins["lane"].unique(), key=_lane_key)
-    left = bins["lane"].str.startswith("L")
-    right = bins["lane"].str.startswith("R")
-    sides = []
-    if left.any():
-        sides.append("lhs")
-    if right.any():
-        sides.append("rhs")
+    surveyed = sorted(bins["lane"].unique(), key=_lane_key)
+    lanes = _lanes_from(chainage_columns(surveyed))
     meta = bins.sort_values(["chainage_start", "lane"]).groupby("chainage_start", sort=True).first()
     upc_start = float(bins["s"].min())
     upc_end = float(bins["e"].max())
@@ -185,8 +181,6 @@ def build_master_chainage(canonical: dict, d1: dict, upc: str, zone: str, phase:
             for name in _GPS:
                 record[f"{prefix}_{name}"] = None if source is None else source[name]
         for side, mask_name in (("lhs", "L"), ("rhs", "R")):
-            if side not in sides:
-                continue
             block = bins[bins["lane"].str.startswith(mask_name)]
             record.update(_side_block(block, chainage, side))
         info = meta.loc[chainage]
@@ -196,13 +190,18 @@ def build_master_chainage(canonical: dict, d1: dict, upc: str, zone: str, phase:
         record["lanes_present"] = ",".join(present)
         record["created_at"] = stamp
         records.append(record)
-    side_cols = [column for column in records[0] if column.startswith(("lhs_", "rhs_"))]
-    lane_cols = [
-        column for column in records[0]
-        if column not in _FRONT and column not in side_cols and column != "created_at"
-    ]
-    ordered = list(_FRONT) + side_cols + lane_cols + ["created_at"]
-    return pd.DataFrame(records)[ordered]
+    return pd.DataFrame(records).reindex(columns=chainage_columns(surveyed))
+
+
+def _lanes_from(names: list[str]) -> list[str]:
+    lanes = []
+    for name in names:
+        head, _, _tail = name.partition("_")
+        if len(head) > 1 and head[0] in "lr" and head[1].isdigit() and name.endswith("_start_chainage"):
+            lane = head.upper()
+            if lane not in lanes:
+                lanes.append(lane)
+    return lanes
 
 
 def build_chainage(ctx):

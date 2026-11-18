@@ -1,11 +1,13 @@
-"""Versioned output columns.
+"""Output columns for one published table.
 
-The Databricks workbook is the current column list. On EC2 the contract
-lives in this module so a run does not need that workbook mounted.
+The list is the Nov 18 notebook contract in ``domain.table_contract``. A run
+does not need the Databricks workbook or the Excel query mounted.
 """
 
 from __future__ import annotations
 
+from ris_silver.domain.table_contract import columns
+
 
 def output_columns(table: str) -> list[str]:
-    raise NotImplementedError(f"column contract for {table} is ported with the first table builder")
+    return columns(table)

@@ -7,6 +7,7 @@ rating_ca is the CA label of the row. A side parent takes the label of the lane
 with the highest metric. rating_irc is filled on 10 m rows (D3, otherwise
 Good/Poor on the fixed IRC cut) and on every cracking row (the IRC bands).
 Cracking Good/Poor and the IRC bands replace the D3 cracking category.
+Severity uses corrected crack width, then raw width. A longer row weights by crack count.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ import pandas as pd
 from ris_silver.domain.conditions import ravelling_condition, roughness_condition, rutting_condition
 from ris_silver.domain.cracking import severity
 from ris_silver.domain.hierarchy import bin_start, rollup_lanes
-from ris_silver.domain.lanes import direction_of_lane, normalize_direction, normalize_lane
+from ris_silver.domain.lanes import direction_of_lane, normalize_direction, normalize_lane, side_of_lane
 from ris_silver.domain.pci import DEFAULT_WEIGHTS, build_pci
 from ris_silver.domain.spec import POTHOLE_TABLE, linear_specs
 from ris_silver.ingest.patching import load_patching
@@ -193,11 +194,15 @@ def _same_direction(frame: pd.DataFrame, direction: str | None) -> pd.DataFrame:
         return cache[normalized]
     same = frame[frame["direction"].fillna("").astype(str).str.strip().str.lower() == normalized]
     filtered = same if not same.empty else frame
+    # A frame must not sit inside its own attrs. The next slice deep-copies attrs,
+    # and a missing direction makes `filtered` the frame itself.
+    snapshot = filtered.copy()
+    snapshot.attrs.clear()
     if not isinstance(cache, dict):
         cache = {}
         frame.attrs["_direction_cache"] = cache
-    cache[normalized] = filtered
-    return filtered
+    cache[normalized] = snapshot
+    return snapshot
 
 
 def _nh_value(row) -> str | None:
@@ -259,6 +264,57 @@ def nh_at(lrms: pd.DataFrame, pavement: pd.DataFrame, chainage, lane, direction)
     if found:
         return found
     return _field(_interval_row(pavement, probe, side), "nh_number", nh=True)
+
+
+def pavement_for_span(pavement, start, end, lane, direction) -> str | None:
+    """Pavement of [start, end). One overlapping D1 type is kept. More than one is Hybrid.
+
+    A row that sits outside every D1 interval keeps the nearest-edge type.
+    """
+    found = _pavement_overlap(pavement, start, end, lane, direction)
+    if found:
+        return found
+    side = direction_of_lane(lane) or normalize_direction(direction)
+    probe = _num(start)
+    if probe is None:
+        probe = _num(end)
+    return _field(_interval_row(pavement, probe, side), "pavement_type")
+
+
+def _pavement_overlap(pavement, start, end, lane, direction) -> str | None:
+    if pavement is None or pavement.empty or "pavement_type" not in getattr(pavement, "columns", []):
+        return None
+    start_n, end_n = _num(start), _num(end)
+    if start_n is None and end_n is None:
+        return None
+    if start_n is None:
+        start_n = end_n
+    if end_n is None:
+        end_n = start_n
+    if end_n < start_n:
+        start_n, end_n = end_n, start_n
+    if end_n == start_n:
+        return None
+    side = direction_of_lane(lane) or normalize_direction(direction)
+    spans = _same_direction(pavement, side)
+    if spans is None or spans.empty:
+        return None
+    types = []
+    for _, row in spans.iterrows():
+        lo, hi = _num(row.get("start_chainage")), _num(row.get("end_chainage"))
+        if lo is None or hi is None:
+            continue
+        if hi < lo:
+            lo, hi = hi, lo
+        if lo < end_n and hi > start_n:
+            text = _plain(row.get("pavement_type"))
+            if text and text not in types:
+                types.append(text)
+    if not types:
+        return None
+    if len(types) > 1:
+        return "Hybrid"
+    return types[0]
 
 
 def road_context(lrms, pavement, carriageway, chainage, lane, direction) -> dict:
@@ -408,11 +464,96 @@ def _measures(existing, extra: dict) -> str:
     return payload
 
 
-def _crack_extra(metric, threshold, own_irc: bool) -> dict:
-    width = 0.0
+def _is_irc_name(threshold_name, kind: str) -> bool:
+    """An IRC row is named for IRC alone. 'As per CA & IRC' stays the CA row."""
+    name = "" if threshold_name is None else str(threshold_name).lower()
+    if "ca" in name:
+        return False
+    if "irc" in name:
+        return True
+    return kind == "irc100"
+
+
+def _crack_pieces(frame) -> list[dict]:
+    if frame is None or getattr(frame, "empty", True):
+        return []
+    pieces = []
+    for row in frame.itertuples(index=False):
+        lane = normalize_lane(getattr(row, "lane", None))
+        if lane is None:
+            continue
+        pieces.append({
+            "lane": lane,
+            "start": _num(getattr(row, "start_chainage", None)),
+            "end": _num(getattr(row, "end_chainage", None)),
+            "count": _num(getattr(row, "crack_count", None)) or 0.0,
+            "corrected": _num(getattr(row, "avg_corrected_width_mm", None)),
+            "raw": _num(getattr(row, "avg_width_mm", None)),
+        })
+    return pieces
+
+
+def _piece_width(corrected, raw) -> float | None:
+    if corrected is not None:
+        return float(corrected)
+    if raw is not None:
+        return float(raw)
+    return None
+
+
+def severity_width(pieces: list[dict], lane, start, end, kind: str, side=None) -> float:
+    """Corrected width, else raw width. A bin is the crack-count-weighted mean.
+
+    A 10 m row uses its own piece. A longer row weights each piece by crack_count.
+    No width and no count both become 0, which is the None band.
+    """
+    start = _num(start)
+    end = _num(end)
+    if start is None:
+        return 0.0
+    if end is None or end < start:
+        end = start
+    wanted = side if side in {"LHS", "RHS"} else side_of_lane(lane)
+    lane_name = normalize_lane(lane) or lane
+    matched = []
+    for piece in pieces:
+        if kind == "parent":
+            if side_of_lane(piece["lane"]) != wanted:
+                continue
+        elif str(piece["lane"]) != str(lane_name):
+            continue
+        p0, p1 = piece["start"], piece["end"]
+        if p0 is None:
+            continue
+        if p1 is None or p1 < p0:
+            p1 = p0
+        overlaps = p1 > start and p0 < end
+        if not overlaps and p0 != start:
+            continue
+        matched.append(piece)
+    if not matched:
+        return 0.0
+    if kind == "10m":
+        exact = [piece for piece in matched if piece["start"] == start]
+        piece = exact[0] if exact else matched[0]
+        width = _piece_width(piece["corrected"], piece["raw"])
+        return 0.0 if width is None else width
+    total = 0.0
+    weighted = 0.0
+    for piece in matched:
+        count = float(piece["count"] or 0.0)
+        width = _piece_width(piece["corrected"], piece["raw"])
+        weighted += (0.0 if width is None else width) * count
+        total += count
+    if total <= 0:
+        return 0.0
+    return weighted / total
+
+
+def _crack_extra(metric, threshold, own_irc: bool, width: float) -> dict:
     label = severity(width)
     return {
-        "severity_width_mm": round(width, 4),
+        "severity_width_mm": round(float(width), 4),
         "severity": label,
         "visual_condition_ca": ca_rating("cracking", metric, threshold),
         "condition_color_ca": _crack_color(metric, threshold, False),
@@ -451,17 +592,17 @@ def enrich(ctx):
         "cracking": float(ctx.irc["cracking_percent"]),
         "ravelling": float(ctx.irc["ravelling_percent"]),
     }
-    choice = {
-        defect: _lane_choice(canonical, defect, int(spec.parent.length_m), ca[defect])
-        for defect, spec in specs.items()
-    }
-    pci_at = _pci_index(lookups)
-    tables = ctx.frames.get("tables") or {}
+    choice = {}
     kind_of = {}
     for defect, spec in specs.items():
-        kind_of[spec.parent.table] = (defect, "parent")
+        if spec.parent is not None:
+            kind_of[spec.parent.table] = (defect, "parent")
+            choice[defect] = _lane_choice(canonical, defect, int(spec.parent.length_m), ca[defect])
         for level in spec.children:
             kind_of[level.table] = (defect, level.kind)
+    pci_at = _pci_index(lookups)
+    crack_widths = _crack_pieces(canonical.get("cracking"))
+    tables = ctx.frames.get("tables") or {}
     kind_of[POTHOLE_TABLE] = ("pothole", "parent")
     potholes = facts.get("potholes")
     filled = 0
@@ -469,7 +610,9 @@ def enrich(ctx):
         if frame is None or frame.empty or name not in kind_of:
             continue
         defect, kind = kind_of[name]
-        updated = _fill_table(frame, defect, kind, ca, irc, choice, pci_at, d3_index, lrms, pavement, potholes)
+        updated = _fill_table(
+            frame, defect, kind, ca, irc, choice, pci_at, d3_index, lrms, pavement, potholes, crack_widths,
+        )
         filled += int(updated["pci"].notna().sum()) if "pci" in updated.columns else 0
         tables[name] = updated
     ctx.frames["tables"] = tables
@@ -477,10 +620,10 @@ def enrich(ctx):
     return ctx
 
 
-def _fill_table(frame, defect, kind, ca, irc, choice, pci_at, d3_index, lrms, pavement, potholes):
+def _fill_table(frame, defect, kind, ca, irc, choice, pci_at, d3_index, lrms, pavement, potholes, crack_widths=None):
     work = frame.copy()
     pothole_severity = _pothole_severity(potholes, len(work)) if defect == "pothole" else []
-    pci_vals, ca_vals, irc_vals, nh_vals, roads, severities, measures = [], [], [], [], [], [], []
+    pci_vals, ca_vals, irc_vals, nh_vals, roads, severities, measures, pavements = [], [], [], [], [], [], [], []
     has_measures = "measures" in work.columns
     for index, row in work.reset_index(drop=True).iterrows():
         rate_metric = _num(row.get("metric_value"))
@@ -497,14 +640,26 @@ def _fill_table(frame, defect, kind, ca, irc, choice, pci_at, d3_index, lrms, pa
         join = None if start is None else bin_start(start, grid)
         pci_vals.append(None if join is None else pci_at.get(level, {}).get((str(lane), join)))
         nh_vals.append(nh_at(lrms, pavement, row.get("start_chainage"), row.get("lane"), row.get("direction")))
+        pavements.append(pavement_for_span(
+            pavement, row.get("start_chainage"), row.get("end_chainage"), row.get("lane"), row.get("direction"),
+        ))
         ca_vals.append(_rating_ca(defect, kind, rate_metric, ca))
         irc_vals.append(_rating_irc(defect, kind, rate_metric, row, irc, d3_index))
-        roads.append(_road(defect, kind, rate_metric, row, ca))
+        own_metric = _num(row.get("metric_value"))
+        roads.append(_road(defect, kind, own_metric if defect == "cracking" else rate_metric, row, ca, d3_index))
         if defect == "cracking":
-            severities.append(severity(0.0))
-            own_irc = kind == "irc100"
-            extra = _crack_extra(rate_metric, ca["cracking"], own_irc)
-            measures.append(row.get("measures") if kind == "parent" else _measures(row.get("measures"), extra))
+            width = severity_width(
+                crack_widths or [],
+                row.get("lane"),
+                row.get("start_chainage"),
+                row.get("end_chainage"),
+                kind,
+                row.get("side"),
+            )
+            severities.append(severity(width))
+            own_irc = _is_irc_name(row.get("threshold_name"), kind)
+            extra = _crack_extra(own_metric, ca["cracking"], own_irc, width)
+            measures.append(_measures(row.get("measures"), extra))
         elif defect == "pothole":
             label = pothole_severity[index] if index < len(pothole_severity) else None
             ca_vals[-1] = label
@@ -518,6 +673,7 @@ def _fill_table(frame, defect, kind, ca, irc, choice, pci_at, d3_index, lrms, pa
     work["rating_ca"] = ca_vals
     work["rating_irc"] = irc_vals
     work["nh_number"] = nh_vals
+    work["pavement_type"] = pavements
     work["road_condition"] = roads
     if defect == "cracking":
         work["severity"] = severities
@@ -544,19 +700,21 @@ def _rating_irc(defect, kind, metric, row, irc, d3_index) -> str | None:
     return None
 
 
-def _road(defect, kind, metric, row, ca):
-    if kind == "parent":
-        return row.get("road_condition")
+def _road(defect, kind, metric, row, ca, d3_index=None):
+    """Cracking uses its own standard. Other CA rows are Good or Bad. An IRC row uses D3."""
     if defect == "cracking":
-        if kind == "irc100":
+        if _is_irc_name(row.get("threshold_name"), kind):
             return crack_irc_visual(metric)
         return ca_rating("cracking", metric, ca["cracking"])
-    if kind == "10m":
-        flag = row.get("ca_breach_flag")
-        return "Bad" if int(flag or 0) == 1 else "Good"
-    if kind == "irc100":
-        return "Poor" if int(row.get("breach_flag") or 0) == 1 else "Good"
-    return "Bad" if int(row.get("breach_flag") or 0) == 1 else "Good"
+    if _is_irc_name(row.get("threshold_name"), kind):
+        if not d3_index or row.get("start_chainage") is None:
+            return None
+        lane = normalize_lane(row.get("lane")) or row.get("lane")
+        return d3_index.get((defect, lane, bin_start(_num(row.get("start_chainage")), 100)))
+    flag = _num(row.get("ca_breach_flag"))
+    if flag is None:
+        flag = _num(row.get("breach_flag"))
+    return "Bad" if flag == 1 else "Good"
 
 
 def _pothole_severity(frame, rows: int) -> list:
