@@ -14,7 +14,7 @@ set +a
 ZONE="B"
 PHASE="1"
 CYCLE="2"
-UPC="N_04006_03001_GJ"
+UPC="N_02001_09001_RJ"
 # A list line may pass UPC, then ZONE, PHASE, and CYCLE. A bare ./run_upc.sh keeps the values above.
 if [[ $# -ge 1 && -n "${1}" ]]; then
   UPC="$1"

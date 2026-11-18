@@ -1,0 +1,13 @@
+2026-11-17T17:14:05Z start list=batches/upcs_1.txt
+2026-11-17T17:14:10Z upc=N_04006_03001_GJ zone=B phase=1 cycle=2 status=FAILED exit=1 elapsed=00:00:05 (5s)
+2026-11-17T17:14:14Z upc=N_01002_01001_GJ zone=B phase=1 cycle=1 status=FAILED exit=1 elapsed=00:00:04 (4s)
+2026-11-17T17:14:21Z upc=N_01002_01001_GJ zone=B phase=1 cycle=2 status=FAILED exit=1 elapsed=00:00:07 (7s)
+2026-11-17T17:14:25Z upc=N_02001_12001_GJ zone=B phase=1 cycle=1 status=FAILED exit=1 elapsed=00:00:04 (4s)
+2026-11-17T17:14:28Z upc=N_08009_06001_GJ zone=B phase=2 cycle=1 status=FAILED exit=1 elapsed=00:00:03 (3s)
+2026-11-17T17:14:33Z upc=N_08009_05001_GJ zone=B phase=2 cycle=1 status=FAILED exit=1 elapsed=00:00:05 (5s)
+2026-11-17T17:14:37Z upc=N_02015_02003_GJ zone=B phase=1 cycle=1 status=FAILED exit=1 elapsed=00:00:04 (4s)
+2026-11-17T17:14:41Z upc=N_02015_02003_GJ zone=B phase=1 cycle=2 status=FAILED exit=1 elapsed=00:00:04 (4s)
+2026-11-17T17:14:45Z upc=N_02015_03002_GJ zone=B phase=1 cycle=1 status=FAILED exit=1 elapsed=00:00:04 (4s)
+2026-11-17T17:14:50Z upc=N_02015_03002_GJ zone=B phase=1 cycle=2 status=FAILED exit=1 elapsed=00:00:05 (5s)
+2026-11-17T17:14:50Z run_elapsed=00:00:45 (45s) upc_count=10 passed=0 failed=10
+2026-11-17T17:14:50Z batch_log=/root/NHAI-nsv-pipeline-old-format/logs/batch_20261117T171405Z.log

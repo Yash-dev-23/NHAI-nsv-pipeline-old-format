@@ -1,0 +1,47 @@
+2026-11-17T18:34:05Z start upc=N_02015_03002_GJ zone=B phase=1 cycle=2
+2026-11-17T18:34:05Z bronze_nsv=s3://nhai-dhms-uat/nsv-extracted-bronze-layer//unity-catalog/7474657023733156/__unitystorage/catalogs/55f24056-457d-4fa3-8b3e-37e087c38424/volumes/c64fa424-f253-41fb-88aa-7cc7169eea13/final_bronze_output/Source=NSV
+2026-11-17T18:34:05Z bronze_backup=s3://nhai-dhms-uat/nsv-extracted-bronze-layer//unity-catalog/7474657023733156/__unitystorage/catalogs/55f24056-457d-4fa3-8b3e-37e087c38424/volumes/c64fa424-f253-41fb-88aa-7cc7169eea13/final_bronze_output/Source=NSV_Backup
+2026-11-17T18:34:05Z silver=s3://dhms-new-stgae/DHMS/NSV/Silver
+2026-11-17T18:34:05Z log_file=/root/NHAI-nsv-pipeline-old-format/logs/N_02015_03002_GJ_ZB_P1_C2_20261117T183405Z.log
+2026-11-17T18:34:05Z STAGE sync_deliverables start
+2026-11-17T18:34:06Z STAGE sync_deliverables done parquet=232
+2026-11-17T18:34:06Z STAGE sync_backup start
+2026-11-17T18:34:06Z STAGE sync_backup done parquet=108
+2026-11-17T18:34:06Z STAGE tracker start
+Completed 1.7 MiB/1.7 MiB (18.6 MiB/s) with 1 file(s) remainingdownload: s3://dhms-new-stgae/DHMS/NSV/NSV_Activity_Tracker_ZoneWise_Standardized_17072026.xlsx to ../../tmp/ris-silver/B_1_2_N_02015_03002_GJ/tracker.xlsx
+2026-11-17T18:34:07Z STAGE tracker done
+2026-11-17T18:34:07Z STAGE pipeline start
+reference: CA bi=3000.0 crack=10.0 rut=10.0 ravel=3.0 override=As per CA
+facts: lanes=['L1', 'L2', 'R1', 'R2'] roughness=20631 cracking=20631 rutting=20631 ravelling=20631 potholes=3538 (D4) d3=['Cracking', 'Pothole', 'Roughness', 'Rutting']
+correction: D2 CA @100m ca_interval=100m rows_changed=14090
+canonical 10m: roughness=20631 rutting=20631 ravelling=20631 cracking=20631
+hierarchy: master_roughness=105/13, child_roughness_as_per_ca=2065/366, child_10m_roughness=20631/7357, child_100m_roughness=2065/802, master_rutting=105/0, child_rutting_as_per_ca=2065/35, child_10m_rutting=20631/1167, child_100m_rutting=2065/35, master_ravelling_ca=1033/87, master_ravelling_irc=2065/0, master_cracking_ca=1033/158, master_cracking_irc=2065/18, child_10m_cracking=20631/1928, master_potholes=3538/3538
+enrich: pci filled on 80097 rows
+master_chainage: 5176 rows | UPC chainage 254300-306070
+publish: master_roughness=105, child_roughness_as_per_ca=2065, child_10m_roughness=20631, child_100m_roughness=2065, master_rutting=105, child_rutting_as_per_ca=2065, child_10m_rutting=20631, child_100m_rutting=2065, master_ravelling_ca=1033, master_ravelling_irc=2065, master_cracking_ca=1033, master_cracking_irc=2065, child_10m_cracking=20631, master_potholes=3538, master_chainage=5176
+validate: PASS=165, FAIL=6, SKIP=8
+6 validation checks failed
+V3 CA child | row length <= 100 m | child_roughness_as_per_ca: max length 103 m
+V4 IRC 100m | row length <= 100 m | child_100m_roughness: max length 103 m
+V3 CA child | row length <= 100 m | child_rutting_as_per_ca: max length 103 m
+V4 IRC 100m | row length <= 100 m | child_100m_rutting: max length 103 m
+V4 IRC 100m | row length <= 100 m | master_ravelling_irc: max length 103 m
+V4 IRC 100m | row length <= 100 m | master_cracking_irc: max length 103 m
+2026-11-17T18:39:08Z STAGE pipeline failed exit=1
+2026-11-17T18:39:08Z ---- summary ----
+2026-11-17T18:39:08Z pipeline_status=FAILED exit=1
+2026-11-17T18:39:08Z upc_elapsed=00:05:03 (303s)
+2026-11-17T18:39:08Z bronze_parquet=340
+2026-11-17T18:39:08Z silver_parquet_run_date=16
+2026-11-17T18:39:08Z silver_csv_run_date=16
+2026-11-17T18:39:08Z silver_parquet_latest=15
+2026-11-17T18:39:08Z silver_csv_latest=15
+2026-11-17T18:39:08Z stages reached:
+reference: CA bi=3000.0 crack=10.0 rut=10.0 ravel=3.0 override=As per CA
+facts: lanes=['L1', 'L2', 'R1', 'R2'] roughness=20631 cracking=20631 rutting=20631 ravelling=20631 potholes=3538 (D4) d3=['Cracking', 'Pothole', 'Roughness', 'Rutting']
+correction: D2 CA @100m ca_interval=100m rows_changed=14090
+hierarchy: master_roughness=105/13, child_roughness_as_per_ca=2065/366, child_10m_roughness=20631/7357, child_100m_roughness=2065/802, master_rutting=105/0, child_rutting_as_per_ca=2065/35, child_10m_rutting=20631/1167, child_100m_rutting=2065/35, master_ravelling_ca=1033/87, master_ravelling_irc=2065/0, master_cracking_ca=1033/158, master_cracking_irc=2065/18, child_10m_cracking=20631/1928, master_potholes=3538/3538
+enrich: pci filled on 80097 rows
+master_chainage: 5176 rows | UPC chainage 254300-306070
+publish: master_roughness=105, child_roughness_as_per_ca=2065, child_10m_roughness=20631, child_100m_roughness=2065, master_rutting=105, child_rutting_as_per_ca=2065, child_10m_rutting=20631, child_100m_rutting=2065, master_ravelling_ca=1033, master_ravelling_irc=2065, master_cracking_ca=1033, master_cracking_irc=2065, child_10m_cracking=20631, master_potholes=3538, master_chainage=5176
+validate: PASS=165, FAIL=6, SKIP=8

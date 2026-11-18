@@ -1,0 +1,37 @@
+2026-11-18T07:47:37Z start upc=N_04006_03001_GJ zone=B phase=1 cycle=2
+2026-11-18T07:47:37Z bronze_nsv=s3://nhai-dhms-uat/nsv-extracted-bronze-layer//unity-catalog/7474657023733156/__unitystorage/catalogs/55f24056-457d-4fa3-8b3e-37e087c38424/volumes/c64fa424-f253-41fb-88aa-7cc7169eea13/final_bronze_output/Source=NSV
+2026-11-18T07:47:37Z bronze_backup=s3://nhai-dhms-uat/nsv-extracted-bronze-layer//unity-catalog/7474657023733156/__unitystorage/catalogs/55f24056-457d-4fa3-8b3e-37e087c38424/volumes/c64fa424-f253-41fb-88aa-7cc7169eea13/final_bronze_output/Source=NSV_Backup
+2026-11-18T07:47:37Z silver=s3://dhms-new-stgae/DHMS/NSV/Silver
+2026-11-18T07:47:37Z log_file=/root/NHAI-nsv-pipeline-old-format/logs/N_04006_03001_GJ_ZB_P1_C2_20261118T074737Z.log
+2026-11-18T07:47:37Z STAGE sync_deliverables start
+2026-11-18T07:47:38Z STAGE sync_deliverables done parquet=204
+2026-11-18T07:47:38Z STAGE sync_backup start
+2026-11-18T07:47:38Z STAGE sync_backup done parquet=104
+2026-11-18T07:47:38Z STAGE tracker start
+Completed 1.7 MiB/1.7 MiB (8.9 MiB/s) with 1 file(s) remainingdownload: s3://dhms-new-stgae/DHMS/NSV/NSV_Activity_Tracker_ZoneWise_Standardized_17072026.xlsx to ../../tmp/ris-silver/B_1_2_N_04006_03001_GJ/tracker.xlsx
+2026-11-18T07:47:39Z STAGE tracker done
+2026-11-18T07:47:39Z STAGE pipeline start
+Traceback (most recent call last):
+  File "/usr/lib64/python3.9/runpy.py", line 197, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/usr/lib64/python3.9/runpy.py", line 87, in _run_code
+    exec(code, run_globals)
+  File "/root/NHAI-nsv-pipeline-old-format/src/ris_silver/__main__.py", line 3, in <module>
+    raise SystemExit(main())
+  File "/root/NHAI-nsv-pipeline-old-format/src/ris_silver/app.py", line 273, in main
+    from ris_silver.quality.checks import ValidationFailed
+  File "/root/NHAI-nsv-pipeline-old-format/src/ris_silver/quality/checks.py", line 17, in <module>
+    from ris_silver.io.paths import silver_partition_dir, silver_parquet_path
+  File "/root/NHAI-nsv-pipeline-old-format/src/ris_silver/io/paths.py", line 9, in <module>
+    PathLike = Path | str
+TypeError: unsupported operand type(s) for |: 'type' and 'type'
+2026-11-18T07:47:40Z STAGE pipeline failed exit=1
+2026-11-18T07:47:40Z ---- summary ----
+2026-11-18T07:47:40Z pipeline_status=FAILED exit=1
+2026-11-18T07:47:40Z upc_elapsed=00:00:03 (3s)
+2026-11-18T07:47:40Z bronze_parquet=308
+2026-11-18T07:47:40Z silver_parquet_run_date=16
+2026-11-18T07:47:40Z silver_csv_run_date=16
+2026-11-18T07:47:40Z silver_parquet_latest=15
+2026-11-18T07:47:40Z silver_csv_latest=15
+2026-11-18T07:47:40Z stages reached:
