@@ -1,44 +1,14 @@
 # NSV Bronze-to-Silver Pipeline
 
-This repository contains the Bronze-to-Silver NSV processing logic for one UPC or a batch of UPCs. It preserves the existing Bronze-to-Silver transformation code while adding a project shell that matches the engineering conventions used in the working reference pipeline.
+This repository contains the Bronze-to-Silver NSV processing logic for one UPC or a sequential batch of UPCs. It includes execution wrappers, environment configuration, logging, and S3-based inputs and outputs.
 
 ## Scope
 
-This project is intentionally scoped to the Bronze-to-Silver layer only. It does not include the full end-to-end Gold layer or the full reference orchestration model, but it follows the same operational conventions around:
-
-- project-level documentation
-- root environment configuration
-- execution wrappers
-- logs and status reporting
-- EC2-friendly setup instructions
-- batch and one-UPC execution
-
-## Repository layout
-
-```text
-NHAI-nsv-pipeline-old-format_bronze_to_silver/
-├── README.md
-├── requirements.txt
-├── pipeline.env
-├── run_pipeline.sh
-├── run_batch.sh
-├── EC2_RUN.md
-├── logs/
-├── tools/
-├── bronze/
-├── config/
-├── silver_tables/
-├── src/
-├── tests/
-├── .gitignore
-├── pyproject.toml
-└── ...
-```
+This project covers the Bronze-to-Silver layer. It does not include the full Gold layer.
 
 ## Quick start
 
 ```bash
-cd /home/softsensor/Desktop/New\ Folder\ 1/NHAI-nsv-pipeline-old-format_bronze_to_silver
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -46,96 +16,73 @@ pip install -r requirements.txt
 ./run_pipeline.sh run --zone B --phase 2 --cycle 1 --upc "N_07024_01001_GJ"
 ```
 
-## Batch execution
+## Run a batch list
+
+Each file in `batches/` contains one survey per line in this order:
+
+```text
+UPC ZONE PHASE CYCLE
+```
+
+Run a list sequentially on an EC2 instance:
 
 ```bash
-./run_batch.sh --root /home/softsensor/Desktop/New\ Folder\ 1/NHAI-nsv-pipeline-old-format_bronze_to_silver/bronze --upc "N_07024_01001_GJ"
+chmod +x run_list.sh run_upc.sh
+./run_list.sh batches/upcs_1.txt
+```
+
+The script continues to the next UPC if a UPC run fails, and returns a non-zero status if any UPC failed. It writes the batch execution log to the repository's local `logs/` directory and, after processing the full list, uploads that log with AWS CLI to the configured `BATCH_LOG_S3` destination. Local logs are retained. The batch command exits non-zero if the batch log upload fails, while preserving the local log for diagnosis.
+
+The destination is configurable in `pipeline.env`:
+
+```dotenv
+BATCH_LOG_S3="${BATCH_LOG_S3:-s3://dhms-new-stgae/DHMS/NSV/logs}"
+```
+
+The log is uploaded with its existing filename, for example:
+
+```text
+s3://dhms-new-stgae/DHMS/NSV/logs/batch_20261118T092800Z.log
+```
+
+An exported `BATCH_LOG_S3` value can override the default. The EC2 instance must have AWS CLI installed, valid AWS credentials/instance-role access, and permission to write to the destination. If upload fails, the error is recorded in the local batch log and the command exits non-zero.
+
+To distribute work across three instances, execute one batch list per instance:
+
+```bash
+# Instance 1
+./run_list.sh batches/upcs_1.txt
+# Instance 2
+./run_list.sh batches/upcs_2.txt
+# Instance 3
+./run_list.sh batches/upcs_3.txt
 ```
 
 ## Environment settings
 
-The runtime values are loaded from `pipeline.env` and may be overridden by command-line arguments.
+Runtime S3 paths and execution defaults are in `pipeline.env`. Important variables include `RAW_S3_ROOT`, `BRONZE_S3_ROOT`, `SILVER_S3_ROOT`, `TRACKER_S3`, `IMAGE_ROOT`, `BATCH_LOG_S3`, `ZONE`, `PHASE`, `CYCLE`, and `UPC`.
 
-Key variables:
-
-- `PROJECT_ROOT`
-- `RAW_S3_ROOT`
-- `BRONZE_ROOT`
-- `BRONZE_NSV_ROOT`
-- `BRONZE_NSV_BACKUP_ROOT`
-- `SILVER_S3_ROOT`
-- `SILVER_ROOT`
-- `LOG_DIR`
-- `IMAGE_ROOT`
-- `TRACKER_PATH`
-- `ZONE`
-- `PHASE`
-- `CYCLE`
-- `UPC`
+- `BATCH_LOG_S3`: S3 directory/prefix for completed batch logs. Defaults to `s3://dhms-new-stgae/DHMS/NSV/logs`.
+- `TRACKER_S3`: tracker workbook S3 URI.
+- `BRONZE_S3_ROOT`: root containing both Bronze source families.
+- `SILVER_S3_ROOT`: Silver layer root.
 
 ## Operational path contract
 
-The repo expects the Bronze data to be organized under a root that contains both source families:
+Bronze inputs are organized under a root containing both source families:
 
 ```text
 <BRONZE_ROOT>/
-├── Source=NSV/
-│   └── Zone=<Z>/Phase=<P>/Cycle=<C>/UPC=<UPC>/...
-├── Source=NSV_Backup/
-│   └── Zone=<Z>/Phase=<P>/Cycle=<C>/UPC=<UPC>/...
-└── ...
+├── Source=NSV/Zone=<Z>/Phase=<P>/Cycle=<C>/UPC=<UPC>/...
+└── Source=NSV_Backup/Zone=<Z>/Phase=<P>/Cycle=<C>/UPC=<UPC>/...
 ```
 
-Concrete S3 example:
-
-```text
-s3://nhai-dhms-uat/databricks-nsv-downloads/final_bronze_output/
-├── Source=NSV/
-│   └── Zone=A/Phase=1/Cycle=1/UPC=N_01001_01001_HR/...
-├── Source=NSV_Backup/
-│   └── Zone=A/Phase=1/Cycle=1/UPC=N_01001_01001_HR/...
-└── ...
-```
-
-The Silver output root is:
-
-```text
-s3://dhms-new-stgae/DHMS/NSV/Silver/
-```
-
-For EC2 execution, the usual mounted equivalent is:
-
-```text
-/mnt/data/final_bronze_output/
-├── Source=NSV/
-│   └── Zone=A/Phase=1/Cycle=1/UPC=.../...
-├── Source=NSV_Backup/
-│   └── Zone=A/Phase=1/Cycle=1/UPC=.../...
-├── /mnt/data/silver_tables
-├── /mnt/data/logs
-├── /mnt/data/images
-├── /mnt/data/NSV_Activity_Tracker_ZoneWise_Standardized_17072026.xlsx
-└── ...
-```
+Silver outputs use the configured root, currently `s3://dhms-new-stgae/DHMS/NSV/Silver/`. Consolidated latest datasets are stored under `Silver/latest/`.
 
 ## Logging and reporting
 
-Runs are expected to be recorded under the `logs/` directory. Batch summaries are appended to
-`logs/batch_summary.csv` and the output contract excludes the `issue_code` column.
-
-## Execution notes
-
-- The business logic in the existing Bronze-to-Silver pipeline is preserved.
-- The project shell is aligned to the reference deployment pattern without changing the underlying transformation code.
-- This repository is not a full Gold pipeline; it remains a Bronze-to-Silver implementation.
-- The pipeline is intentionally path-aware and environment-driven rather than hardcoded to a machine-specific filesystem.
+Per-UPC logs and completed batch logs are retained locally under `logs/`. Each `run_list.sh` execution creates a uniquely named `batch_<UTC timestamp>.log`; after all UPCs finish, that file is copied to `BATCH_LOG_S3` using AWS CLI. The upload uses `aws s3 cp` and does not remove or move the local file. UPC failures do not stop subsequent entries, but any UPC failure or batch-log upload failure makes the overall command return non-zero.
 
 ## Operational guidance
 
-For production execution on EC2, use the guidance in `EC2_RUN.md` and ensure:
-
-- Python dependencies are installed in a virtual environment
-- `RAW_S3_ROOT`, `BRONZE_ROOT`, `SILVER_ROOT`, `LOG_DIR`, `IMAGE_ROOT`, and `TRACKER_PATH` are set correctly in `pipeline.env`
-- the tracker file path is valid for the selected run
-- the Bronze input tree matches the expected `Source=NSV` / `Source=NSV_Backup` layout
-- the output path is writable and follows the project partition pattern
+For EC2 execution, install Python dependencies and AWS CLI, configure the instance role or credentials for required Bronze reads and Silver/log writes, and verify the configured tracker and S3 destinations are accessible before running a batch.

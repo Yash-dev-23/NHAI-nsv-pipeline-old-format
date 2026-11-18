@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
-# Run the surveys in a text file, one after another.
-# One survey failing does not stop the rest.
-# Each line is: UPC ZONE PHASE CYCLE
-# A line with only a UPC uses the ZONE, PHASE, and CYCLE set in run_upc.sh.
+# Run surveys from a text file sequentially. Individual UPC failures do not stop the list.
+# Each line: UPC ZONE PHASE CYCLE (or UPC only, using run_upc.sh defaults).
 # Usage: ./run_list.sh batches/upcs_1.txt
 
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="${ENV_FILE:-${ROOT}/pipeline.env}"
+if [[ -f "${ENV_FILE}" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "${ENV_FILE}"
+  set +a
+fi
+BATCH_LOG_S3="${BATCH_LOG_S3:-s3://dhms-new-stgae/DHMS/NSV/logs}"
+
 LIST="${1:-}"
 RUNNER="${RUN_UPC_BIN:-${ROOT}/run_upc.sh}"
 
@@ -22,6 +29,7 @@ RUN_STARTED="$(date +%s)"
 passed=0
 failed=0
 count=0
+batch_exit=0
 
 mkdir -p "${ROOT}/logs"
 
@@ -63,10 +71,28 @@ while IFS= read -r line || [[ -n "${line}" ]]; do
   fi
 done < "${LIST}"
 
-log "run_elapsed=$(format_elapsed "$(( $(date +%s) - RUN_STARTED ))") upc_count=${count} passed=${passed} failed=${failed}"
+if [[ "${failed}" -ne 0 ]]; then
+  batch_status="FAILED"
+  batch_exit=1
+else
+  batch_status="PASSED"
+fi
+log "run_elapsed=$(format_elapsed "$(( $(date +%s) - RUN_STARTED ))") upc_count=${count} passed=${passed} failed=${failed} batch_status=${batch_status}"
 log "batch_log=${LOG_FILE}"
 
-if [[ "${failed}" -ne 0 ]]; then
-  exit 1
+BATCH_LOG_TARGET="${BATCH_LOG_S3%/}/$(basename "${LOG_FILE}")"
+log "batch_log_upload=STARTED destination=${BATCH_LOG_TARGET}"
+if command -v aws >/dev/null 2>&1; then
+  if aws s3 cp "${LOG_FILE}" "${BATCH_LOG_TARGET}"; then
+    log "batch_log_upload=PASSED destination=${BATCH_LOG_TARGET}"
+  else
+    upload_code=$?
+    log "batch_log_upload=FAILED exit=${upload_code} local_log=${LOG_FILE}"
+    batch_exit=1
+  fi
+else
+  log "batch_log_upload=FAILED reason=aws_cli_not_found local_log=${LOG_FILE}"
+  batch_exit=1
 fi
-exit 0
+
+exit "${batch_exit}"
