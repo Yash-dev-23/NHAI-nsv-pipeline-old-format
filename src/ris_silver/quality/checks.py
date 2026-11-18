@@ -15,7 +15,7 @@ from ris_silver.domain.hierarchy import rollup_lanes
 from ris_silver.domain.lanes import normalize_lane
 from ris_silver.domain.spec import POTHOLE_TABLE, CHAINAGE_TABLE, linear_specs
 from ris_silver.io.paths import silver_partition_dir, silver_parquet_path
-from ris_silver.io.writer import _replace_partition
+from ris_silver.io.writer import _write_table_pair
 from ris_silver.quality.report import build_report
 
 CHECKS = (
@@ -347,7 +347,7 @@ def validate(ctx):
         report["zone"] = ctx.zone
         report["phase"] = str(ctx.phase)
         report["cycle"] = str(ctx.cycle)
-        _replace_partition(directory, report, "dlm_validation_results")
+        _write_table_pair(directory, "dlm_validation_results", report)
     counts = Counter(row["status"] for row in results)
     print("validate: " + ", ".join(f"{status}={counts[status]}" for status in ("PASS", "WARN", "FAIL", "SKIP") if counts[status]))
     if counts["FAIL"]:
