@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# One UPC, bronze to silver, on EC2.
-# S3 paths come from pipeline.env. Edit only ZONE, PHASE, CYCLE, and UPC.
-# The pipeline keeps the latest year/month/day under Source=NSV and Source=NSV_Backup.
+# One UPC, Bronze to Silver, on EC2.
+# A list runner passes UPC, ZONE, PHASE, CYCLE; no-argument execution preserves
+# the standalone defaults below.
 
 set -euo pipefail
 
@@ -10,24 +10,18 @@ set -a
 # shellcheck disable=SC1091
 source "${ROOT}/pipeline.env"
 set +a
+# shellcheck disable=SC1091
+source "${ROOT}/scripts/runtime_paths.sh"
 
+# Preserve the existing standalone execution defaults.
 ZONE="B"
 PHASE="1"
 CYCLE="2"
 UPC="N_02001_09001_RJ"
-# A list line may pass UPC, then ZONE, PHASE, and CYCLE. A bare ./run_upc.sh keeps the values above.
-if [[ $# -ge 1 && -n "${1}" ]]; then
-  UPC="$1"
-fi
-if [[ $# -ge 2 && -n "${2}" ]]; then
-  ZONE="$2"
-fi
-if [[ $# -ge 3 && -n "${3}" ]]; then
-  PHASE="$3"
-fi
-if [[ $# -ge 4 && -n "${4}" ]]; then
-  CYCLE="$4"
-fi
+if [[ $# -ge 1 && -n "${1}" ]]; then UPC="$1"; fi
+if [[ $# -ge 2 && -n "${2}" ]]; then ZONE="$2"; fi
+if [[ $# -ge 3 && -n "${3}" ]]; then PHASE="$3"; fi
+if [[ $# -ge 4 && -n "${4}" ]]; then CYCLE="$4"; fi
 
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 WORK="${TMPDIR:-/tmp}/ris-silver/${ZONE}_${PHASE}_${CYCLE}_${UPC}"
@@ -39,6 +33,11 @@ LOG_NAME="${UPC}_Z${ZONE}_P${PHASE}_C${CYCLE}_${STAMP}.log"
 LOG_FILE="${ROOT}/logs/${LOG_NAME}"
 PIPELINE_STATUS="NOT_STARTED"
 RUN_STARTED="$(date +%s)"
+
+# Crucially, resolve S3 paths after command-line values have replaced defaults.
+resolve_runtime_s3_paths
+BRONZE_NSV_UPC_S3="${BRONZE_NSV_ROOT%/}/${PREFIX}"
+BRONZE_BACKUP_UPC_S3="${BRONZE_NSV_BACKUP_ROOT%/}/${PREFIX}"
 
 mkdir -p "${LOCAL_BRONZE}" "${LOCAL_SILVER}" "${WORK}/images" "${ROOT}/logs"
 
@@ -55,10 +54,7 @@ count_named() {
   local root="$1"
   local name="$2"
   local under="${3:-}"
-  if [[ ! -d "${root}" ]]; then
-    echo 0
-    return
-  fi
+  if [[ ! -d "${root}" ]]; then echo 0; return; fi
   if [[ -n "${under}" ]]; then
     find "${root}" -type f -path "*/${under}/*" -name "${name}" | wc -l | tr -d ' '
   else
@@ -69,9 +65,7 @@ count_named() {
 list_named() {
   local root="$1"
   local name="$2"
-  if [[ ! -d "${root}" ]]; then
-    return
-  fi
+  [[ -d "${root}" ]] || return
   find "${root}" -type f -name "${name}" | sort | while read -r path; do
     log "  $(wc -c < "${path}" | tr -d ' ') bytes  ${path#${root}/}"
   done
@@ -83,44 +77,54 @@ finish() {
   log "pipeline_status=${PIPELINE_STATUS} exit=${code}"
   log "upc_elapsed=$(format_elapsed "$(( $(date +%s) - RUN_STARTED ))")"
   log "bronze_parquet=$(count_named "${LOCAL_BRONZE}" '*.parquet')"
-  log "silver_parquet_run_date=$(count_named "${LOCAL_SILVER}" '*.parquet' 'run_date=*')"
-  log "silver_csv_run_date=$(count_named "${LOCAL_SILVER}" '*.csv' 'run_date=*')"
-  log "silver_parquet_latest=$(count_named "${LOCAL_SILVER}" '*.parquet' 'latest')"
-  log "silver_csv_latest=$(count_named "${LOCAL_SILVER}" '*.csv' 'latest')"
+  log "silver_parquet=$(count_named "${LOCAL_SILVER}" '*.parquet')"
+  log "silver_csv=$(count_named "${LOCAL_SILVER}" '*.csv')"
   if [[ -f "${LOG_FILE}" ]]; then
     log "stages reached:"
     grep -E '^(reference|facts|correction|canonical|hierarchy|enrich|master_chainage|publish|validate):' "${LOG_FILE}" | tee -a "${LOG_FILE}" || true
   fi
   if [[ -n "${LOG_DIR:-}" ]]; then
-    aws s3 cp "${LOG_FILE}" "${LOG_DIR}/${LOG_NAME}" || log "log upload failed"
+    log "upc_log_upload=STARTED destination=${UPC_LOG_S3}"
+    if aws s3 cp "${LOG_FILE}" "${UPC_LOG_S3}"; then
+      log "upc_log_upload=PASSED destination=${UPC_LOG_S3}"
+    else
+      local upload_code=$?
+      log "upc_log_upload=FAILED exit=${upload_code} local_log=${LOG_FILE}"
+    fi
   fi
 }
 trap finish EXIT
 
-log "start upc=${UPC} zone=${ZONE} phase=${PHASE} cycle=${CYCLE}"
-log "bronze_nsv=${BRONZE_NSV_ROOT}"
-log "bronze_backup=${BRONZE_NSV_BACKUP_ROOT}"
-log "silver=${OUTPUT_ROOT}"
-log "log_file=${LOG_FILE}"
+log "resolved_run zone=${ZONE} phase=${PHASE} cycle=${CYCLE} upc=${UPC}"
+log "resolved_s3 bronze_nsv=${BRONZE_NSV_UPC_S3}"
+log "resolved_s3 bronze_backup=${BRONZE_BACKUP_UPC_S3}"
+log "resolved_s3 tracker=${TRACKER_S3}"
+log "resolved_s3 silver_layer_root=${OUTPUT_ROOT}"
+log "resolved_s3 silver_upc_root=${SILVER_UPC_ROOT}"
+log "resolved_s3 silver_data_output=${SILVER_DATA_OUTPUT_DIR}"
+log "resolved_s3 upc_log=${UPC_LOG_S3}"
+log "resolved_s3 batch_logs=${BATCH_LOG_S3:-}"
+log "resolved_local intermediate_workspace=${WORK}"
+log "local_log=${LOG_FILE}"
 
 log "STAGE sync_deliverables start"
-aws s3 sync "${BRONZE_NSV_ROOT}/${PREFIX}/" "${LOCAL_BRONZE}/Source=NSV/${PREFIX}/" | tee -a "${LOG_FILE}"
+aws s3 sync "${BRONZE_NSV_UPC_S3}/" "${LOCAL_BRONZE}/Source=NSV/${PREFIX}/" | tee -a "${LOG_FILE}"
 log "STAGE sync_deliverables done parquet=$(count_named "${LOCAL_BRONZE}/Source=NSV" '*.parquet')"
 
 log "STAGE sync_backup start"
-aws s3 sync "${BRONZE_NSV_BACKUP_ROOT}/${PREFIX}/" "${LOCAL_BRONZE}/Source=NSV_Backup/${PREFIX}/" | tee -a "${LOG_FILE}"
+aws s3 sync "${BRONZE_BACKUP_UPC_S3}/" "${LOCAL_BRONZE}/Source=NSV_Backup/${PREFIX}/" | tee -a "${LOG_FILE}"
 log "STAGE sync_backup done parquet=$(count_named "${LOCAL_BRONZE}/Source=NSV_Backup" '*.parquet')"
 
-log "STAGE tracker start"
+log "STAGE tracker start source=${TRACKER_S3}"
 if aws s3 cp "${TRACKER_S3}" "${LOCAL_TRACKER}" | tee -a "${LOG_FILE}"; then
   TRACKER_FILE="${LOCAL_TRACKER}"
-  log "STAGE tracker done"
+  log "STAGE tracker done local=${TRACKER_FILE}"
 else
   TRACKER_FILE="${WORK}/missing_tracker.xlsx"
-  log "STAGE tracker missing, CA defaults will be used"
+  log "STAGE tracker missing source=${TRACKER_S3}; pipeline may use defaults"
 fi
 
-# Reader opens a local tree. Keep the S3 URIs only for sync and upload.
+# Python reads a local tree. S3 URIs are used only by the shell sync/upload steps.
 export BRONZE_S3_ROOT=""
 export SILVER_S3_ROOT=""
 export TRACKER_S3=""
@@ -147,12 +151,14 @@ PIPELINE_STATUS="PASSED"
 log "STAGE pipeline done"
 
 log "STAGE silver_files"
-log "run_date parquet=$(count_named "${LOCAL_SILVER}" '*.parquet')"
-log "run_date csv=$(count_named "${LOCAL_SILVER}" '*.csv')"
+log "silver parquet=$(count_named "${LOCAL_SILVER}" '*.parquet')"
+log "silver csv=$(count_named "${LOCAL_SILVER}" '*.csv')"
 list_named "${LOCAL_SILVER}" '*.parquet'
 list_named "${LOCAL_SILVER}" '*.csv'
 
-log "STAGE upload_silver start ${OUTPUT_ROOT}"
+# The local tree already contains zone/phase/cycle/UPC partitions. Sync at the
+# Silver layer root to avoid nesting those partitions twice.
+log "STAGE upload_silver start source=${LOCAL_SILVER}/ destination=${OUTPUT_ROOT}/"
 aws s3 sync "${LOCAL_SILVER}/" "${OUTPUT_ROOT}/" | tee -a "${LOG_FILE}"
-log "STAGE upload_silver done"
+log "STAGE upload_silver done destination=${OUTPUT_ROOT}/"
 log "done upc=${UPC} zone=${ZONE} phase=${PHASE} cycle=${CYCLE}"
