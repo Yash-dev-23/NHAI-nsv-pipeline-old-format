@@ -38,8 +38,11 @@ RUN_STARTED="$(date +%s)"
 resolve_runtime_s3_paths
 BRONZE_NSV_UPC_S3="${BRONZE_NSV_ROOT%/}/${PREFIX}"
 BRONZE_BACKUP_UPC_S3="${BRONZE_NSV_BACKUP_ROOT%/}/${PREFIX}"
+# Notebook image root: Zone_A/Phase_1/Cycle_2/{UPC}/deliverable under nsv_downloads.
+IMAGE_UPC_S3="${NSV_DOWNLOADS_ROOT%/}/Zone_${ZONE}/Phase_${PHASE}/Cycle_${CYCLE}/${UPC}/deliverable"
+LOCAL_IMAGES="${WORK}/images"
 
-mkdir -p "${LOCAL_BRONZE}" "${LOCAL_SILVER}" "${ROOT}/logs"
+mkdir -p "${LOCAL_BRONZE}" "${LOCAL_SILVER}" "${LOCAL_IMAGES}" "${ROOT}/logs"
 
 log() {
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "${LOG_FILE}"
@@ -98,6 +101,7 @@ trap finish EXIT
 log "resolved_run zone=${ZONE} phase=${PHASE} cycle=${CYCLE} upc=${UPC}"
 log "resolved_s3 bronze_nsv=${BRONZE_NSV_UPC_S3}"
 log "resolved_s3 bronze_backup=${BRONZE_BACKUP_UPC_S3}"
+log "resolved_s3 images=${IMAGE_UPC_S3}"
 log "resolved_s3 tracker=${TRACKER_S3}"
 log "resolved_s3 silver_layer_root=${OUTPUT_ROOT}"
 log "resolved_s3 silver_upc_root=${SILVER_UPC_ROOT}"
@@ -115,6 +119,10 @@ log "STAGE sync_backup start"
 aws s3 sync "${BRONZE_BACKUP_UPC_S3}/" "${LOCAL_BRONZE}/Source=NSV_Backup/${PREFIX}/" | tee -a "${LOG_FILE}"
 log "STAGE sync_backup done parquet=$(count_named "${LOCAL_BRONZE}/Source=NSV_Backup" '*.parquet')"
 
+log "STAGE sync_images start source=${IMAGE_UPC_S3}"
+aws s3 sync "${IMAGE_UPC_S3}/" "${LOCAL_IMAGES}/" | tee -a "${LOG_FILE}"
+log "STAGE sync_images done jpg=$(count_named "${LOCAL_IMAGES}" '*.jpg')"
+
 log "STAGE tracker start source=${TRACKER_S3}"
 if aws s3 cp "${TRACKER_S3}" "${LOCAL_TRACKER}" | tee -a "${LOG_FILE}"; then
   TRACKER_FILE="${LOCAL_TRACKER}"
@@ -125,14 +133,14 @@ else
 fi
 
 # Python reads a local tree. S3 URIs are used only by the shell sync/upload steps.
-# Images are the jpg/png files already inside this UPC's NSV deliverables, including D3.
+# Image files come from the synced nsv_downloads deliverable folder, the folder the notebook walks.
 export BRONZE_S3_ROOT=""
 export SILVER_S3_ROOT=""
 export TRACKER_S3=""
 export BRONZE_ROOT="${LOCAL_BRONZE}"
 export SILVER_ROOT="${LOCAL_SILVER}"
 export TRACKER_PATH="${TRACKER_FILE}"
-export IMAGE_ROOT="${LOCAL_BRONZE}/Source=NSV/${PREFIX}"
+export IMAGE_ROOT="${LOCAL_IMAGES}"
 export PYTHONPATH="${ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 export PYTHONUNBUFFERED=1
 
