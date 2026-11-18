@@ -51,23 +51,27 @@ while IFS= read -r line || [[ -n "${line}" ]]; do
   [[ -z "${upc}" ]] && continue
 
   upc_started="$(date +%s)"
+  log "upc_start upc=${upc} zone=${zone:-DEFAULT} phase=${phase:-DEFAULT} cycle=${cycle:-DEFAULT}"
+
   if [[ -n "${zone}" ]]; then
-    "${RUNNER}" "${upc}" "${zone}" "${phase}" "${cycle}"
-    code=$?
+    "${RUNNER}" "${upc}" "${zone}" "${phase}" "${cycle}" 2>&1 | tee -a "${LOG_FILE}"
+    code=${PIPESTATUS[0]}
     label="upc=${upc} zone=${zone} phase=${phase} cycle=${cycle}"
   else
-    "${RUNNER}" "${upc}"
-    code=$?
+    "${RUNNER}" "${upc}" 2>&1 | tee -a "${LOG_FILE}"
+    code=${PIPESTATUS[0]}
     label="upc=${upc}"
   fi
+
   upc_elapsed="$(( $(date +%s) - upc_started ))"
+  upc_log="${ROOT}/logs/${upc}_Z${zone:-B}_P${phase:-1}_C${cycle:-1}_" 
   count=$((count + 1))
   if [[ "${code}" -eq 0 ]]; then
     passed=$((passed + 1))
     log "${label} status=PASSED exit=0 elapsed=$(format_elapsed "${upc_elapsed}")"
   else
     failed=$((failed + 1))
-    log "${label} status=FAILED exit=${code} elapsed=$(format_elapsed "${upc_elapsed}")"
+    log "${label} status=FAILED exit=${code} elapsed=$(format_elapsed "${upc_elapsed}") reason=see_upc_log local_upc_log_prefix=${upc_log}"
   fi
 done < "${LIST}"
 
@@ -93,6 +97,11 @@ if command -v aws >/dev/null 2>&1; then
 else
   log "batch_log_upload=FAILED reason=aws_cli_not_found local_log=${LOG_FILE}"
   batch_exit=1
+fi
+
+# Upload again so the local log includes the final upload result.
+if [[ "${batch_exit}" -eq 0 ]]; then
+  aws s3 cp "${LOG_FILE}" "${BATCH_LOG_TARGET}" >/dev/null 2>&1 || true
 fi
 
 exit "${batch_exit}"
