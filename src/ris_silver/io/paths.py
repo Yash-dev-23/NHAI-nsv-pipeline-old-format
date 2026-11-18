@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Union
 
 from ris_silver.context import RunContext
 
-PathLike = Path | str
+PathLike = Union[Path, str]
 
 
 def _join(root: str | Path, *parts: str) -> PathLike:
