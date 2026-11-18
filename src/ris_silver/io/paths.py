@@ -1,13 +1,4 @@
-"""Where a run reads and writes. Roots are blank until storage paths are chosen.
-
-S3-style conventions:
-    <silver_root>/zone=<zone>/phase=<phase>/cycle=<cycle>/<upc>/dlm_kpi_new/<table>.parquet
-    <silver_root>/latest/zone=<zone>/phase=<phase>/cycle=<cycle>/<upc>/dlm_kpi_new/<table>.parquet
-
-Each Parquet object has a sibling CSV. The global latest root retains the
-zone/phase/cycle/UPC partition hierarchy so updates from one UPC do not replace
-other UPCs' outputs.
-"""
+"""Silver output locations for UPC runs and shared consolidated latest datasets."""
 
 from __future__ import annotations
 
@@ -15,72 +6,78 @@ from pathlib import Path
 
 from ris_silver.context import RunContext
 
+PathLike = Path | str
+
+
+def _join(root: str | Path, *parts: str) -> PathLike:
+    """Join path components without mangling an S3 URI into ``s3:/...``."""
+    value = str(root).rstrip("/")
+    if value.startswith("s3://"):
+        return value + "/" + "/".join(part.strip("/") for part in parts)
+    return Path(root).joinpath(*parts)
+
 
 def bronze_upc_dir(ctx: RunContext) -> Path | None:
     if not ctx.bronze_root:
         return None
-    return (
-        Path(ctx.bronze_root)
-        / f"Zone={ctx.zone}"
-        / f"Phase={ctx.phase}"
-        / f"Cycle={ctx.cycle}"
-        / f"UPC={ctx.upc}"
-    )
+    return Path(ctx.bronze_root) / "Source=NSV" / f"Zone={ctx.zone}" / f"Phase={ctx.phase}" / f"Cycle={ctx.cycle}" / f"UPC={ctx.upc}"
 
 
 def _upc_key(value: str) -> str:
     return str(value).replace("/", "-").replace("_", "-").strip("-")
 
 
-def silver_run_root(ctx: RunContext) -> Path | None:
-    """Return the historical/current output root for one UPC."""
+def silver_run_root(ctx: RunContext) -> PathLike | None:
+    """Return the per-UPC Silver output root."""
     if not ctx.silver_root:
         return None
-    return (
-        Path(ctx.silver_root)
-        / f"zone={ctx.zone}"
-        / f"phase={ctx.phase}"
-        / f"cycle={ctx.cycle}"
-        / _upc_key(ctx.upc)
+    return _join(
+        ctx.silver_root,
+        f"zone={ctx.zone}",
+        f"phase={ctx.phase}",
+        f"cycle={ctx.cycle}",
+        _upc_key(ctx.upc),
     )
 
 
-def silver_partition_dir(ctx: RunContext, table: str) -> Path | None:
+def silver_partition_dir(ctx: RunContext, table: str) -> PathLike | None:
     """Return this UPC's standard DLM KPI output directory."""
     root = silver_run_root(ctx)
     if root is None:
         return None
-    return root / "dlm_kpi_new"
+    return _join(root, "dlm_kpi_new")
 
 
-def silver_latest_partition_dir(ctx: RunContext, table: str) -> Path | None:
-    """Return this UPC's partition under the shared Silver/latest root.
-
-    The partition columns remain in the path so runs for different zones,
-    phases, cycles, and UPCs coexist without overwriting one another.
-    """
+def silver_latest_partition_dir(ctx: RunContext, table: str) -> PathLike | None:
+    """Return the single shared directory containing one consolidated file per table."""
     if not ctx.silver_root:
         return None
-    return (
-        Path(ctx.silver_root)
-        / "latest"
-        / f"zone={ctx.zone}"
-        / f"phase={ctx.phase}"
-        / f"cycle={ctx.cycle}"
-        / _upc_key(ctx.upc)
-        / "dlm_kpi_new"
-    )
+    return _join(ctx.silver_root, "latest")
 
 
-def silver_parquet_path(ctx: RunContext, table: str) -> Path | None:
+def silver_parquet_path(ctx: RunContext, table: str) -> PathLike | None:
     directory = silver_partition_dir(ctx, table)
     if directory is None:
         return None
-    return directory / f"{table}.parquet"
+    return _join(directory, f"{table}.parquet")
 
 
-def silver_csv_path(ctx: RunContext, table: str) -> Path | None:
+def silver_csv_path(ctx: RunContext, table: str) -> PathLike | None:
     directory = silver_partition_dir(ctx, table)
     if directory is None:
         return None
-    return directory / f"{table}.csv"
+    return _join(directory, f"{table}.csv")
+
+
+def silver_latest_parquet_path(ctx: RunContext, table: str) -> PathLike | None:
+    directory = silver_latest_partition_dir(ctx, table)
+    if directory is None:
+        return None
+    return _join(directory, f"{table}.parquet")
+
+
+def silver_latest_csv_path(ctx: RunContext, table: str) -> PathLike | None:
+    directory = silver_latest_partition_dir(ctx, table)
+    if directory is None:
+        return None
+    return _join(directory, f"{table}.csv")
