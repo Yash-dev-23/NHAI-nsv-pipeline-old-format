@@ -26,7 +26,6 @@ from ris_silver.domain.spec import POTHOLE_TABLE, linear_specs
 from ris_silver.ingest.patching import load_patching
 
 _NH_RE = re.compile(r"^\s*(?:N\.?\s*H\.?)?\s*[-_/ ]*0*(\d+)\s*([A-Za-z]*)\s*$", re.I)
-_DIRECTION_CACHE: dict[tuple[int, str], pd.DataFrame] = {}
 _D3_NAME = {
     "cracking": "Cracking",
     "roughness": "Roughness",
@@ -181,16 +180,23 @@ def prepare_carriageway(frame) -> pd.DataFrame:
 
 
 def _same_direction(frame: pd.DataFrame, direction: str | None) -> pd.DataFrame:
+    """Keep rows for this direction. Cache lives on the frame, not on id(frame).
+
+    id() is reused after the previous enrich() frames are freed. A global cache
+    then handed the LRMS frame to the pavement lookup, which has no start_chainage.
+    """
     if frame is None or frame.empty or direction is None or "direction" not in frame.columns:
         return frame
     normalized = direction.strip().lower()
-    key = (id(frame), normalized)
-    cached = _DIRECTION_CACHE.get(key)
-    if cached is not None:
-        return cached
+    cache = frame.attrs.get("_direction_cache")
+    if isinstance(cache, dict) and normalized in cache:
+        return cache[normalized]
     same = frame[frame["direction"].fillna("").astype(str).str.strip().str.lower() == normalized]
     filtered = same if not same.empty else frame
-    _DIRECTION_CACHE[key] = filtered
+    if not isinstance(cache, dict):
+        cache = {}
+        frame.attrs["_direction_cache"] = cache
+    cache[normalized] = filtered
     return filtered
 
 
@@ -215,7 +221,7 @@ def _nearest_row(frame, probe, direction):
     if frame is None or frame.empty or probe is None or "chainage" not in frame.columns:
         return None
     points = _same_direction(frame, direction)
-    if points is None or points.empty:
+    if points is None or points.empty or "chainage" not in points.columns:
         return None
     distance = (pd.to_numeric(points["chainage"], errors="coerce") - probe).abs()
     return points.loc[distance.idxmin()]
@@ -226,7 +232,7 @@ def _interval_row(frame, probe, direction):
     if frame is None or frame.empty or probe is None or "start_chainage" not in frame.columns:
         return None
     spans = _same_direction(frame, direction)
-    if spans is None or spans.empty:
+    if spans is None or spans.empty or "start_chainage" not in spans.columns or "end_chainage" not in spans.columns:
         return None
     half = spans[(spans["start_chainage"] <= probe) & (spans["end_chainage"] > probe)]
     if half.empty:
