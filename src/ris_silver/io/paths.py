@@ -1,13 +1,12 @@
 """Where a run reads and writes. Roots are blank until storage paths are chosen.
 
 S3-style convention:
-    <silver_root>/zone=<zone>/phase=<phase>/cycle=<cycle>/<upc>/run_date=<YYYY-MM-DD>/<table>/<table>.parquet
-    and a sibling <table>.csv alongside the parquet object.
+    <silver_root>/zone=<zone>/phase=<phase>/cycle=<cycle>/<upc>/dlm_kpi_new/<table>.parquet
+    and a sibling <table>.csv in dlm_kpi_new.
 """
 
 from __future__ import annotations
 
-from datetime import date
 from pathlib import Path
 
 from ris_silver.context import RunContext
@@ -29,13 +28,6 @@ def _upc_key(value: str) -> str:
     return str(value).replace("/", "-").replace("_", "-").strip("-")
 
 
-def _run_date(ctx: RunContext) -> str:
-    explicit = getattr(ctx, "run_id", None) or getattr(ctx, "run_date", None)
-    if explicit:
-        return str(explicit)
-    return date.today().isoformat()
-
-
 def silver_run_root(ctx: RunContext) -> Path | None:
     if not ctx.silver_root:
         return None
@@ -49,27 +41,21 @@ def silver_run_root(ctx: RunContext) -> Path | None:
 
 
 def silver_partition_dir(ctx: RunContext, table: str) -> Path | None:
-    """Return the directory for a single table partition.
+    """Return the dlm_kpi_new directory for this UPC partition.
 
-    Final object path is expected to be:
-        <silver_root>/zone=<zone>/phase=<phase>/cycle=<cycle>/<upc>/run_date=<date>/<table>/<table>.parquet
+    Final object paths are:
+        <silver_root>/zone=<zone>/phase=<phase>/cycle=<cycle>/<upc>/dlm_kpi_new/<table>.parquet
+        <silver_root>/zone=<zone>/phase=<phase>/cycle=<cycle>/<upc>/dlm_kpi_new/<table>.csv
     """
     root = silver_run_root(ctx)
     if root is None:
         return None
-    return root / f"run_date={_run_date(ctx)}" / table
+    return root / "dlm_kpi_new"
 
 
 def silver_latest_partition_dir(ctx: RunContext, table: str) -> Path | None:
-    """Mirror the currently active run into a stable latest folder beneath the same UPC tree.
-
-    This keeps historical run_date folders intact while making the newest Silver data immediately available
-    under <silver_root>/zone=.../phase=.../cycle=.../<upc>/latest/<table>/.
-    """
-    root = silver_run_root(ctx)
-    if root is None:
-        return None
-    return root / "latest" / table
+    """Keep the latest output in the UPC's dlm_kpi_new directory."""
+    return silver_partition_dir(ctx, table)
 
 
 def silver_parquet_path(ctx: RunContext, table: str) -> Path | None:
